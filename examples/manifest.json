@@ -1,0 +1,34 @@
+{
+  "examples": [
+    {
+      "file": "input/cash_bill.pdf",
+      "expected_type": "บิลเงินสด",
+      "source_url": "https://finance.wu.ac.th/wp-content/uploads/2020/04/%E0%B8%95%E0%B8%B1%E0%B8%A7%E0%B8%AD%E0%B8%A2%E0%B9%88%E0%B8%B2%E0%B8%87%E0%B8%9A%E0%B8%B4%E0%B8%A5%E0%B9%80%E0%B8%87%E0%B8%B4%E0%B8%99%E0%B8%AA%E0%B8%94.pdf",
+      "source_page": 1
+    },
+    {
+      "file": "input/receipt_substitute.pdf",
+      "expected_type": "ใบรับรองใบแทนใบเสร็จ",
+      "source_url": "https://www.rd.go.th/fileadmin/download/15277290359.pdf",
+      "source_page": 13
+    },
+    {
+      "file": "input/tollway.pdf",
+      "expected_type": "ทางด่วน",
+      "source_url": "https://www.innnews.co.th/news/news_296923/",
+      "derived_from_image": "https://www.innnews.co.th/wp-content/uploads/2022/02/%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%81%E0%B8%B2%E0%B8%A8%E0%B9%80%E0%B8%9B%E0%B8%A5%E0%B8%B5%E0%B9%88%E0%B8%A2%E0%B8%99%E0%B9%83%E0%B8%9A%E0%B9%80%E0%B8%AA%E0%B8%A3%E0%B9%87%E0%B8%88%E0%B9%83%E0%B8%AB%E0%B8%A1%E0%B9%88-1024x750.jpeg"
+    },
+    {
+      "file": "input/tax_invoice.pdf",
+      "expected_type": "ใบกำกับภาษี",
+      "source_url": "https://www.rd.go.th/fileadmin/user_upload/ebook/taxinvoice.pdf",
+      "source_page": 13
+    },
+    {
+      "file": "input/receipt.pdf",
+      "expected_type": "ใบเสร็จรับเงิน",
+      "source_url": "https://finance.wu.ac.th/wp-content/uploads/2020/04/%E0%B8%95%E0%B8%B1%E0%B8%A7%E0%B8%AD%E0%B8%A2%E0%B9%88%E0%B8%B2%E0%B8%87%E0%B9%83%E0%B8%9A%E0%B9%80%E0%B8%AA%E0%B8%A3%E0%B9%87%E0%B8%88%E0%B8%A3%E0%B8%B1%E0%B8%9A%E0%B9%80%E0%B8%87%E0%B8%B4%E0%B8%99.pdf",
+      "source_page": 1
+    }
+  ]
+}
