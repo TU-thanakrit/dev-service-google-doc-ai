@@ -242,14 +242,21 @@ def _verified_team(verifier: TokenVerifier, directory: TeamDirectory, request: R
 def _servable_job(store: DurableOcrStore, team_id: str, job_id: str, now: datetime) -> JobRecord:
     """One expiry rule, applied before any content is read (contract §3.3).
 
-    A foreign team's job id is simply absent, so team isolation needs no
-    separate branch here.
+    The gate reads `job.json` and `final.json` only, so access is denied at
+    `expires_at` whether or not cleanup has already deleted the content (D39): the
+    result object is loaded after the gate has served, and only for a final job.
+    A foreign team's job id is simply absent, so team isolation needs no separate
+    branch here.
     """
-    job = store.get_job(team_id, job_id)
+    job = store.get_job_meta(team_id, job_id)
     if job is None:
         raise OcrError(404, "not_found")
     if now >= _deny_instant(job):
         raise OcrError(410, "job_expired")
+    if job.finalized_at is not None:
+        # `final.json` exists, so the gate served: the published result must be
+        # present and readable, and a missing one is `500` plus an alert (§2.2).
+        store.read_result(job)
     return job
 
 
@@ -386,7 +393,7 @@ def _compensate(
     precondition is skipped, not forced; reconciliation owns the remainder.
     """
     for cleanup in (
-        lambda: store.delete_input(job),
+        lambda: store.delete_input_if_present(job),
         lambda: store.delete_job(job),
         lambda: store.delete_claim(team_id, key_hash, claim_generation, job.job_id),
     ):
@@ -568,7 +575,7 @@ def _recognize_pages(
             # and is not checkpointed (D42).
             break
         if page.status == SUCCEEDED:
-            store.put_page_checkpoint(job, page)
+            store.put_page_checkpoint(job, page, now=clock.now())
         pages.append(page)
     for page_number in range(len(pages) + 1, total + 1):
         pages.append(_failed_page(page_number, DEADLINE_PAGE_ERROR))
@@ -638,7 +645,7 @@ def run_job(
     if content is None:
         return False
 
-    store.mark_running(job)
+    store.mark_running(job, now=clock.now())
     total = engine.page_count(content, job.mime_type)
     job.pages_total = total
     job.pages = _recognize_pages(store, engine, clock, job, content, total)
@@ -648,7 +655,18 @@ def run_job(
         finalize_deadline(job, now)
     else:
         _finalize_result(job, now)
-    store.publish(job)
+    if store.publish(job) and job.state == SUCCEEDED:
+        # Full success: the input goes at once rather than at expiry (§6.3). Only
+        # the `final.json` winner decides, so a losing attempt of a partial job
+        # cannot delete the input that partial job keeps until cleanup.
+        if not store.delete_input_if_present(job):
+            # Momentary: reconciliation retries it, and cleanup signals it overdue
+            # (§6.2, §6.3). Allowlisted fields only [D20].
+            logger.error(
+                "ocr_worker input deletion pending job_id=%s team_id=%s",
+                job.job_id,
+                job.team_id,
+            )
     return True
 
 
