@@ -15,11 +15,14 @@ here and nothing more.
 | `app/ocr_worker.py` | Cloud Run Jobs worker entrypoint: claim the lease, recognize, publish |
 | `app/ocr_reconcile.py` | Cloud Run Jobs reconciliation entrypoint: repair undispatched, lost-ack, and failed-launch jobs |
 | `app/ocr_config.py` | `OCR_*` environment settings for every role |
-| `app/ocr_api.py` | the Cloud Run API composition (a separate app; `app.main` is untouched) |
+| `app/ocr_api.py` | the Cloud Run API composition (a separate app; `app/main.py` is historical code) |
 | `app/ocr_store.py` | added the `claim.json` lease and the dispatch-attempt bookkeeping |
 
-The synchronous expense app (`app.main`, `POST /v1/documents:process`) is **not**
-touched, and the OCR tracer is still not mounted by it.
+The synchronous expense app (`app/main.py`, `POST /v1/documents:process`) is
+retained as historical code that no command starts; the service's default
+container command is now this composition
+(`uvicorn app.ocr_api:app`, `Dockerfile`), and the retired route is not served by
+it. Issue #12's cutover record is `docs/ocr-v1-cutover.md`.
 
 ## Launch acknowledgment is not OCR completion
 

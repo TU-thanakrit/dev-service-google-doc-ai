@@ -1,7 +1,7 @@
 [project]
 name = "service-google-doc-ai"
 version = "0.1.0"
-description = "POC API for Thai expense document OCR, classification, and extraction"
+description = "Asynchronous OCR-only service: private Cloud Run API and Cloud Run Jobs workers over GCS"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.116,<1",
