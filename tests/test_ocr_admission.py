@@ -494,6 +494,3 @@ def test_reconciliation_removes_a_leaked_entry_for_a_final_job():
 
     assert admission_entries(tracer.store) == {}
 
-
-
-
