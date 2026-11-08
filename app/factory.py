@@ -1,3 +1,5 @@
+"""Historical: builds the Document AI + Gemini expense pipeline (see `app/main.py`)."""
+
 from google import genai
 from google.genai import types
 

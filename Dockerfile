@@ -30,4 +30,11 @@ COPY app ./app
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin ocrworker
 USER 10001
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]
+# One image, four roles (docs/ocr-v1-dispatch.md): this default CMD is the API
+# service, and the worker, reconcile, and cleanup Cloud Run Jobs override it with
+# `python -m app.ocr_worker` / `app.ocr_reconcile` / `app.ocr_cleanup`. The
+# synchronous expense modules (`app/main.py`, `app/service.py`,
+# `app/integrations.py`) are retained in the image as historical code only: no
+# command here starts them, so no deployed role can reach the Gemini or Document
+# AI expense path (issue #12).
+CMD ["sh", "-c", "uvicorn app.ocr_api:app --host 0.0.0.0 --port ${PORT}"]

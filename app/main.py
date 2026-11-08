@@ -1,3 +1,10 @@
+"""Historical: the synchronous five-template expense API (`POST /v1/documents:process`).
+
+Retained for its tests and provenance only. No container command and no documented
+procedure starts this module, and it is not reachable from the served OCR app
+(`app.ocr_api`); see `docs/ocr-v1-cutover.md`.
+"""
+
 import logging
 from typing import Annotated, Any, Protocol
 

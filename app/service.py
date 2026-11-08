@@ -1,3 +1,5 @@
+"""Historical: the expense OCR -> classification -> extraction orchestration."""
+
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
