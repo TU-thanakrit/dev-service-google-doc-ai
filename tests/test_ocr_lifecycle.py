@@ -29,6 +29,7 @@ from app.ocr_cleanup import (
 from app.ocr_reconcile import reconcile
 from app.ocr_store import SUCCEEDED, JobRecord, PageResult, PreconditionFailed
 from app.ocr_tracer import (
+    DEADLINE_PAGE_ERROR,
     JOB_LIFETIME,
     RETENTION,
     EnginePage,
@@ -38,6 +39,7 @@ from app.ocr_tracer import (
     create_ocr_tracer_app,
 )
 from app.ocr_tracer_fakes import (
+    FAKE_ENGINE_REF,
     ControllableDispatcher,
     FakeOcrEngine,
     FakeTokenVerifier,
@@ -69,10 +71,10 @@ class FakeClock:
         self._now += delta
 
 
-def build(*, objects=None, engine=None, store=None):
+def build(*, objects=None, engine=None, store=None, clock=None):
     store = store or InMemoryOcrStore(objects)
     engine = engine or FakeOcrEngine(PAGES)
-    clock = FakeClock(START)
+    clock = clock or FakeClock(START)
     dispatcher = ControllableDispatcher(store=store, engine=engine, clock=clock)
     client = TestClient(
         create_ocr_tracer_app(
@@ -80,7 +82,7 @@ def build(*, objects=None, engine=None, store=None):
             dispatcher=dispatcher,
             clock=clock,
             verifier=FakeTokenVerifier({TOKEN: Principal(email=EMAIL, subject="sub-a")}),
-            directory=MappingTeamDirectory({EMAIL: TEAM}),
+            directory=MappingTeamDirectory({f"{EMAIL}|sub-a": TEAM}),
         ),
         headers={"Authorization": f"Bearer {TOKEN}"},
         raise_server_exceptions=False,
@@ -576,6 +578,50 @@ def test_an_expired_job_is_denied_before_any_cleanup_runs():
     assert tracer.objects.read(f"jobs/{TEAM}/{first}/final.json") is not None
 
 
+def test_a_same_key_submit_after_partial_cleanup_replaces_the_expired_record():
+    tracer = build()
+    first = submit(tracer).json()["job_id"]
+    work(tracer, first)
+    # Cleanup deletes content first (D37): the published result is gone while the
+    # records that gate access are not. A same-key submit past expiry must decide
+    # from the lightweight metadata and start a *new* job, not fail on the deleted
+    # result object.
+    remove_object(tracer, f"jobs/{TEAM}/{first}/result.1.json")
+    tracer.clock.advance(RETENTION + timedelta(minutes=1))
+
+    replaced = submit(tracer)
+
+    assert replaced.status_code == 202
+    assert replaced.json()["job_id"] != first
+
+
+def test_a_live_job_with_a_missing_result_still_answers_a_same_key_retry():
+    tracer = build()
+    first = submit(tracer).json()["job_id"]
+    work(tracer, first)
+    remove_object(tracer, f"jobs/{TEAM}/{first}/result.1.json")
+
+    retried = submit(tracer)
+
+    # Deduplication still holds inside the retention window: the retry returns the
+    # existing job from metadata alone and never touches the absent result, so a
+    # missing result object cannot turn a deduplicated submission into a 500.
+    assert retried.status_code == 200
+    assert retried.json()["job_id"] == first
+
+
+def test_the_lightweight_read_never_loads_a_deleted_result():
+    tracer = build()
+    job_id = submit(tracer).json()["job_id"]
+    work(tracer, job_id)
+    remove_object(tracer, f"jobs/{TEAM}/{job_id}/result.1.json")
+
+    # The expiry-metadata read answers for a finalized job whose result is absent.
+    meta = tracer.store.get_job_meta(TEAM, job_id)
+    assert meta.finalized_at is not None
+    assert meta.pages == []
+
+
 def test_a_late_worker_cannot_replace_a_finalized_outcome():
     tracer = build()
     job_id = submit(tracer).json()["job_id"]
@@ -605,3 +651,96 @@ def test_a_straggler_after_cleanup_creates_nothing():
     # No records to resume from: the straggler creates nothing back (§5.5).
     assert tracer.objects.names() == after
     assert tracer.engine.calls == calls
+
+
+# --- Deadline page accounting (review: deadline finding) ----------------------
+
+
+# A container whose page tree the admission byte scan can see, so the accepted
+# job's persisted `pages_total` is 3.
+PDF_3_PAGES = b"%PDF-1.7\n" + b"/Type /Page " * 3 + b"trailer\n%%EOF\n"
+
+
+class ClockConsumingEngine:
+    """Page 1 succeeds but spends the whole window, so the attempt stops there."""
+
+    engine_ref = FAKE_ENGINE_REF
+
+    def __init__(self, clock):
+        self._clock = clock
+        self.calls: list[int] = []
+
+    def page_count(self, content, mime_type, *, timeout_s=None):
+        return 3
+
+    def recognize_page(self, content, mime_type, page_number, *, timeout_s=None):
+        self.calls.append(page_number)
+        self._clock.advance(JOB_LIFETIME)
+        return EnginePage(text=f"page {page_number}")
+
+
+def test_reconciliation_accounts_for_every_known_page_at_the_deadline():
+    tracer = build()
+    job_id = submit(tracer, content=PDF_3_PAGES).json()["job_id"]
+    job = tracer.store.get_job(TEAM, job_id)
+    assert job.pages_total == 3
+    # A prior attempt checkpointed pages 1 and 3 - page 2 failed permanently, so it
+    # left a hole - then no further attempt ran before the deadline.
+    tracer.store.put_page_checkpoint(job, page(1, text="one"), now=START)
+    tracer.store.put_page_checkpoint(job, page(3, text="three"), now=START)
+    tracer.clock.advance(JOB_LIFETIME)
+
+    assert reconcile(store=tracer.store, dispatcher=tracer.dispatcher, clock=tracer.clock) == [
+        f"finalized:deadline_exceeded:{TEAM}/{job_id}"
+    ]
+
+    body = result_body(tracer, job_id)
+    assert (body["state"], body["reason"], body["completeness"]) == (
+        "partially_succeeded", "deadline_exceeded", "partial"
+    )
+    # One ordered entry per known source page: the hole is accounted for rather
+    # than dropped, and the out-of-order page-3 checkpoint survives.
+    assert body["page_count"] == 3
+    assert [entry["page_number"] for entry in body["pages"]] == [1, 2, 3]
+    assert [entry["status"] for entry in body["pages"]] == ["succeeded", "failed", "succeeded"]
+    assert body["pages"][1]["error_code"] == DEADLINE_PAGE_ERROR
+    assert body["text"] == "one\nthree"
+
+
+def test_reconciliation_credits_a_checkpoint_beyond_an_unknown_page_count():
+    tracer = build()
+    job_id = submit(tracer).json()["job_id"]  # no page tree the byte scan can see
+    job = tracer.store.get_job(TEAM, job_id)
+    assert job.pages_total is None
+    tracer.store.put_page_checkpoint(job, page(3, text="three"), now=START)
+    tracer.clock.advance(JOB_LIFETIME)
+
+    reconcile(store=tracer.store, dispatcher=tracer.dispatcher, clock=tracer.clock)
+
+    body = result_body(tracer, job_id)
+    # The page count is taken from the durable checkpoint, so pages 1 and 2 are
+    # accounted for instead of the result claiming a single page.
+    assert body["page_count"] == 3
+    assert [entry["page_number"] for entry in body["pages"]] == [1, 2, 3]
+    assert [entry["status"] for entry in body["pages"]] == ["failed", "failed", "succeeded"]
+
+
+def test_a_worker_stopping_at_the_deadline_credits_a_later_checkpoint():
+    clock = FakeClock(START)
+    engine = ClockConsumingEngine(clock)
+    tracer = build(engine=engine, clock=clock)
+    job_id = submit(tracer, content=PDF_3_PAGES).json()["job_id"]
+    job = tracer.store.get_job(TEAM, job_id)
+    # A previous attempt already checkpointed page 3; the current attempt stops at
+    # page 1 because that page consumed the whole window.
+    tracer.store.put_page_checkpoint(job, page(3, text="three"), now=START)
+
+    assert work(tracer, job_id) == 0
+
+    body = result_body(tracer, job_id)
+    assert (body["state"], body["reason"]) == ("partially_succeeded", "deadline_exceeded")
+    # A later, durable checkpoint is not overwritten by a deadline failure: only
+    # the genuinely missing pages are reported failed.
+    assert [entry["page_number"] for entry in body["pages"]] == [1, 2, 3]
+    assert [entry["status"] for entry in body["pages"]] == ["failed", "failed", "succeeded"]
+    assert body["text"] == "three"

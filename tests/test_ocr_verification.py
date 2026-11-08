@@ -8,7 +8,11 @@ this says nothing about a deployed service.
 
 import json
 
-from app.ocr_verification import summarize_result_body, verify_result_body
+from app.ocr_verification import (
+    REDACTED,
+    summarize_result_body,
+    verify_result_body,
+)
 
 # A contract-conformant success: two pages, one of them from an embedded PDF text
 # layer, warnings deduplicated in page order.
@@ -204,3 +208,65 @@ def test_a_page_missing_its_text_is_reported_instead_of_crashing():
     errors = verify_result_body(body)
 
     assert any("missing keys" in error for error in errors)
+
+
+# --- the default report copies only closed-vocabulary values ------------------
+
+# A hostile value an external body could put where a warning, an error code, or a
+# job id belongs. The summary is printed and written to a file, so none of this
+# text may survive into it.
+HOSTILE = "token=abc /home/danny/private"
+
+
+def test_the_summary_redacts_warnings_and_error_codes_outside_the_closed_set():
+    body = json.loads(json.dumps(SUCCEEDED))
+    body["warnings"] = [HOSTILE, "no_text"]
+    body["pages"][0]["warnings"] = [HOSTILE]
+    body["pages"][1]["error_code"] = "engine: " + HOSTILE
+
+    summary = summarize_result_body(body)
+    rendered = json.dumps(summary, ensure_ascii=False)
+
+    assert "token=abc" not in rendered
+    assert "private" not in rendered
+    # The contract's own warning survives; the unknown one is redacted in place.
+    assert summary["warnings"] == [REDACTED, "no_text"]
+    assert summary["pages"][0]["warnings"] == [REDACTED]
+    assert summary["pages"][1]["error_code"] == REDACTED
+
+
+def test_the_summary_redacts_a_reason_and_a_job_id_outside_the_contract():
+    reason = mutated(state="failed", reason="deadline_exceeded: " + HOSTILE)
+    # A failed job with no text key: one failed page carries the failure.
+    reason["completeness"] = "partial"
+    reason["pages"] = [
+        {
+            "page_number": 1,
+            "status": "failed",
+            "text_source": "ocr",
+            "text": None,
+            "warnings": [],
+            "error_code": "page_engine_error",
+        }
+    ]
+    reason["page_count"] = 1
+    reason.pop("text")
+    summary = summarize_result_body(reason)
+
+    assert "token=abc" not in json.dumps(summary)
+    assert summary["reason"] == REDACTED
+
+    # A job id is a server-generated UUID; anything else is untrusted text.
+    hijacked = summarize_result_body(mutated(job_id="../../etc/passwd"))
+    assert "etc/passwd" not in json.dumps(hijacked)
+    assert hijacked["job_id"] == REDACTED
+
+
+def test_a_verification_error_names_the_shape_never_the_untrusted_text():
+    """The verifier's own error strings are printed too, so they cannot echo a value."""
+    body = mutated(state="failed", reason=HOSTILE, completeness="partial", text="")
+    errors = verify_result_body(body)
+
+    assert errors
+    assert "token=abc" not in " ".join(errors)
+    assert "private" not in " ".join(errors)

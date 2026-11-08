@@ -30,18 +30,22 @@ finalize at or after it can be `succeeded` (D42).
 
 What changed is what reconciliation accounts for:
 
-- **Credit for durable pages.** The reconciler has no engine, so it cannot
-  enumerate a document's pages. It now loads the durable succeeded page
-  checkpoints (`pages/*.json`, validated against the job and its pin, D41) and
-  finalizes with them: `partially_succeeded` when at least one page is durable,
-  `failed` otherwise, always `reason: deadline_exceeded`.
-- **Limit, stated plainly.** A page that failed, or that no attempt ever reached,
-  leaves no checkpoint, so it cannot appear in a reconciliation-time result. The
-  reported `page_count` is therefore the number of pages this path can account
-  for, and `pages_total` stays unset rather than being invented. A deadline
-  finalization reached by a worker that was actually running still reports every
-  source page with the failed ones marked. Resuming page work at the deadline
-  remains out of scope: reconciliation never recognizes anything.
+- **Credit for every known page.** The reconciler has no engine, so it never
+  recognizes anything, but it does account for every page it can know: the durable
+  succeeded page checkpoints (`pages/*.json`, validated against the job and its
+  pin, D41) and the persisted `pages_total` the admission byte scan wrote,
+  whichever reaches higher. Each known page gets one ordered entry — its
+  checkpoint when one exists, otherwise a `failed` entry carrying
+  `deadline_exceeded` — so `page_count` matches the page list, and a page that
+  succeeded out of order (or after a permanent failure left a hole) is credited
+  rather than dropped. The job is `partially_succeeded` when at least one page is
+  durable, `failed` otherwise, always `reason: deadline_exceeded`.
+- **Limit, stated plainly.** A page that neither the byte scan nor any checkpoint
+  reveals is unknowable here and is not invented: when the page tree was invisible
+  to the byte scan and no checkpoint exists, the count is `0` and the failure is
+  carried by `state`/`reason`. The worker's own deadline path already accounts for
+  every source page with the missing ones marked. Resuming page work at the
+  deadline remains out of scope: reconciliation never recognizes anything.
 - Reconciliation also completes the §6.3 prompt deletion (below) for a full
   success whose finalizing worker died first.
 
@@ -74,6 +78,10 @@ the arbiter, and the cleanup guard — not by cross-object fencing (§5.3).
   ever served from it.
 - Deduplication ends at the same instant (§3.4/D44): a same-key submission at or
   after `expires_at` is accepted as a **new** job, and the record is replaced by CAS.
+  The liveness decision reads only the lightweight records (`job.json`,
+  `final.json`, `dispatch.json`) and never loads a result object, so a job whose
+  content a cleanup pass already removed is still decided correctly rather than
+  failing on the deleted result.
 - A **full success** deletes its input immediately, from the `final.json` winner
   only, so a partial or failed job keeps its input until cleanup. A same-key retry
   after a success writes nothing and does not re-upload it, so retention is not

@@ -29,6 +29,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -173,6 +174,7 @@ class CommandOcrEngine:
         render_timeout_s: float = DEFAULT_RENDER_TIMEOUT_S,
         ocr_timeout_s: float = DEFAULT_OCR_TIMEOUT_S,
         workdir: str | Path | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._runner = runner
         self.engine_ref = engine_ref
@@ -190,6 +192,9 @@ class CommandOcrEngine:
         self._render_timeout = render_timeout_s
         self._ocr_timeout = ocr_timeout_s
         self._workdir = None if workdir is None else str(workdir)
+        # The elapsed-time source behind the caller's page budget. Injected so a
+        # test can make elapsed time explicit; production uses the real clock.
+        self._monotonic = monotonic
 
     # --- OcrEngine seam ------------------------------------------------------
 
@@ -197,12 +202,13 @@ class CommandOcrEngine:
         self, content: bytes, mime_type: str, *, timeout_s: float | None = None
     ) -> int:
         """Source page/frame count, without recognizing anything (§2.6/D24)."""
+        deadline = self._deadline(timeout_s)
         if mime_type == PDF:
-            return self._pdf_page_count(content, timeout_s)
+            return self._pdf_page_count(content, deadline)
         if mime_type in SINGLE_PAGE_TYPES:
             return 1
         if mime_type == TIFF:
-            return self._tiff_frame_count(content, timeout_s)
+            return self._tiff_frame_count(content, deadline)
         raise self._error(0, PERMANENT_ERROR)
 
     def recognize_page(
@@ -215,31 +221,33 @@ class CommandOcrEngine:
     ) -> EnginePage:
         """Recognize one page, preferring a usable embedded PDF text layer (D11).
 
-        `timeout_s` is the caller's bound for this page (the remaining job deadline
-        and live-lease window). Every external command the page issues is capped by
-        it, so one page can never outlive the attempt's window even when a
-        configured ceiling is larger (§5.5, D42).
+        `timeout_s` is the caller's allowance for this page (the remaining job
+        deadline and live-lease window). It is turned into one monotonic deadline
+        at entry, and every external command the page issues draws its timeout from
+        what is left of it, so one page can never outlive the attempt's window even
+        when a configured ceiling is larger (§5.5, D42).
         """
         if page_number < 1:
             raise self._error(page_number, PERMANENT_ERROR)
+        deadline = self._deadline(timeout_s)
         if mime_type == PDF:
-            return self._pdf_page(content, page_number, timeout_s)
+            return self._pdf_page(content, page_number, deadline)
         if mime_type in SINGLE_PAGE_TYPES:
             if page_number != 1:
                 raise self._error(page_number, PERMANENT_ERROR)
-            return self._ocr_file(content, IMAGE_SUFFIX[mime_type], page_number, timeout_s)
+            return self._ocr_file(content, IMAGE_SUFFIX[mime_type], page_number, deadline)
         if mime_type == TIFF:
-            return self._tiff_frame(content, page_number, timeout_s)
+            return self._tiff_frame(content, page_number, deadline)
         raise self._error(page_number, PERMANENT_ERROR)
 
     # --- containers ----------------------------------------------------------
 
-    def _pdf_page_count(self, content: bytes, timeout_s: float | None) -> int:
+    def _pdf_page_count(self, content: bytes, deadline: float | None) -> int:
         with self._scratch(content, ".pdf") as path:
             try:
                 result = self._runner.run(
                     [self._pdfinfo, str(path)],
-                    timeout=self._bounded(self._decode_timeout, timeout_s),
+                    timeout=self._bounded(self._decode_timeout, deadline, 0),
                 )
             except (CommandTimeout, CommandError):
                 raise self._error(0, TRANSIENT_ERROR) from None
@@ -248,14 +256,14 @@ class CommandOcrEngine:
             raise self._error(0, PERMANENT_ERROR)
         return count
 
-    def _tiff_frame_count(self, content: bytes, timeout_s: float | None) -> int:
+    def _tiff_frame_count(self, content: bytes, deadline: float | None) -> int:
         with self._scratch(content, ".tiff") as path:
             try:
                 # `identify` prints the format once per frame, so the format ends
                 # in a newline and the first line carries the count.
                 result = self._runner.run(
                     [self._image_identify, "-format", "%n\n", str(path)],
-                    timeout=self._bounded(self._decode_timeout, timeout_s),
+                    timeout=self._bounded(self._decode_timeout, deadline, 0),
                 )
             except (CommandTimeout, CommandError):
                 raise self._error(0, TRANSIENT_ERROR) from None
@@ -266,17 +274,17 @@ class CommandOcrEngine:
 
     # --- one page ------------------------------------------------------------
 
-    def _pdf_page(self, content: bytes, page_number: int, timeout_s: float | None) -> EnginePage:
+    def _pdf_page(self, content: bytes, page_number: int, deadline: float | None) -> EnginePage:
         with self._scratch(content, ".pdf") as path:
-            embedded = self._embedded_text(path, page_number, timeout_s)
+            embedded = self._embedded_text(path, page_number, deadline)
             if embedded is not None:
                 return EnginePage(text=embedded, text_source=EMBEDDED)
             return self._ocr_image(
-                self._render_page(path, page_number, timeout_s), page_number, timeout_s
+                self._render_page(path, page_number, deadline), page_number, deadline
             )
 
     def _embedded_text(
-        self, path: Path, page_number: int, timeout_s: float | None
+        self, path: Path, page_number: int, deadline: float | None
     ) -> str | None:
         """The page's usable text layer, or `None` when the page must be OCR'd.
 
@@ -296,7 +304,7 @@ class CommandOcrEngine:
         ]
         try:
             result = self._runner.run(
-                argv, timeout=self._bounded(self._decode_timeout, timeout_s)
+                argv, timeout=self._bounded(self._decode_timeout, deadline, page_number)
             )
         except (CommandTimeout, CommandError):
             return None
@@ -304,7 +312,7 @@ class CommandOcrEngine:
             return None
         return _usable_embedded(result.stdout)
 
-    def _render_page(self, path: Path, page_number: int, timeout_s: float | None) -> Path:
+    def _render_page(self, path: Path, page_number: int, deadline: float | None) -> Path:
         prefix = path.parent / "page"
         argv = [
             self._pdftoppm,
@@ -320,7 +328,7 @@ class CommandOcrEngine:
         ]
         try:
             result = self._runner.run(
-                argv, timeout=self._bounded(self._render_timeout, timeout_s)
+                argv, timeout=self._bounded(self._render_timeout, deadline, page_number)
             )
         except (CommandTimeout, CommandError):
             raise self._error(page_number, TRANSIENT_ERROR) from None
@@ -334,28 +342,28 @@ class CommandOcrEngine:
         return rendered[0]
 
     def _tiff_frame(
-        self, content: bytes, page_number: int, timeout_s: float | None
+        self, content: bytes, page_number: int, deadline: float | None
     ) -> EnginePage:
         with self._scratch(content, ".tiff") as path:
             target = path.parent / "frame.png"
             argv = [self._image_convert, f"{path}[{page_number - 1}]", str(target)]
             try:
                 result = self._runner.run(
-                    argv, timeout=self._bounded(self._render_timeout, timeout_s)
+                    argv, timeout=self._bounded(self._render_timeout, deadline, page_number)
                 )
             except (CommandTimeout, CommandError):
                 raise self._error(page_number, TRANSIENT_ERROR) from None
             if result.returncode != 0 or not target.exists():
                 raise self._error(page_number, PERMANENT_ERROR)
-            return self._ocr_image(target, page_number, timeout_s)
+            return self._ocr_image(target, page_number, deadline)
 
     def _ocr_file(
-        self, content: bytes, suffix: str, page_number: int, timeout_s: float | None
+        self, content: bytes, suffix: str, page_number: int, deadline: float | None
     ) -> EnginePage:
         with self._scratch(content, suffix) as path:
-            return self._ocr_image(path, page_number, timeout_s)
+            return self._ocr_image(path, page_number, deadline)
 
-    def _ocr_image(self, path: Path, page_number: int, timeout_s: float | None) -> EnginePage:
+    def _ocr_image(self, path: Path, page_number: int, deadline: float | None) -> EnginePage:
         argv = [
             self._tesseract,
             str(path),
@@ -369,7 +377,7 @@ class CommandOcrEngine:
         try:
             result = self._runner.run(
                 argv,
-                timeout=self._bounded(self._ocr_timeout, timeout_s),
+                timeout=self._bounded(self._ocr_timeout, deadline, page_number),
                 env=env,
             )
         except (CommandTimeout, CommandError):
@@ -382,14 +390,26 @@ class CommandOcrEngine:
 
     # --- helpers -------------------------------------------------------------
 
-    @staticmethod
-    def _bounded(configured: float, timeout_s: float | None) -> float:
-        """The configured strict ceiling, tightened to the caller's page budget.
+    def _deadline(self, timeout_s: float | None) -> float | None:
+        """The monotonic instant a call's budget expires, or `None` for no bound."""
+        return None if timeout_s is None else self._monotonic() + timeout_s
 
-        A budget is only ever an upper bound: it can shorten a command's timeout,
-        never lengthen it, so the adapter's own strict ceilings still apply.
+    def _bounded(self, configured: float, deadline: float | None, page_number: int) -> float:
+        """The timeout for one command: the ceiling tightened to the *remaining* budget.
+
+        One page (or decode) has a single monotonic allowance. Every command asks
+        what is left of it before it is issued, so a page's commands draw from the
+        same shrinking budget instead of each getting a fresh full-length one, and
+        a command arriving after the allowance is spent fails as a transient page
+        error rather than running past the window (§5.5, D42). The configured
+        ceiling still applies, because the allowance can only shorten it.
         """
-        return configured if timeout_s is None else min(configured, timeout_s)
+        if deadline is None:
+            return configured
+        remaining = deadline - self._monotonic()
+        if remaining <= 0:
+            raise self._error(page_number, TRANSIENT_ERROR)
+        return min(configured, remaining)
 
     @contextmanager
     def _scratch(self, content: bytes, suffix: str) -> Iterator[Path]:

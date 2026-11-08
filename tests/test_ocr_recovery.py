@@ -60,11 +60,11 @@ class FakeClock:
         self._now += delta
 
 
-def build(*, objects=None, engine=None, acknowledge=True):
+def build(*, objects=None, engine=None, acknowledge=True, clock=None):
     objects = objects if objects is not None else InMemoryObjectStore()
     store = InMemoryOcrStore(objects)
+    clock = clock or FakeClock(START)
     engine = engine or FakeOcrEngine([EnginePage(text="page one"), EnginePage(text="page two")])
-    clock = FakeClock(START)
     dispatcher = ControllableDispatcher(
         store=store, engine=engine, clock=clock, acknowledge=acknowledge
     )
@@ -74,7 +74,7 @@ def build(*, objects=None, engine=None, acknowledge=True):
             dispatcher=dispatcher,
             clock=clock,
             verifier=FakeTokenVerifier({TOKEN: Principal(email=EMAIL, subject="sub-a")}),
-            directory=MappingTeamDirectory({EMAIL: TEAM}),
+            directory=MappingTeamDirectory({f"{EMAIL}|sub-a": TEAM}),
         ),
         headers={"Authorization": f"Bearer {TOKEN}"},
         raise_server_exceptions=False,
@@ -345,3 +345,52 @@ def test_a_worker_crossing_the_deadline_finalizes_with_the_pages_it_finished():
         DEADLINE_PAGE_ERROR,
     ]
     assert body["text"] == "page one"
+
+
+# --- A page's budget is one shrinking allowance (review: cumulative budget) ---
+
+
+class DeadlineConsumingEngine:
+    """Page 2 spends the whole window, then fails transiently on its first call."""
+
+    engine_ref = FAKE_ENGINE_REF
+
+    def __init__(self, clock) -> None:
+        self._clock = clock
+        self.calls: list[int] = []
+
+    def page_count(self, content: bytes, mime_type: str, *, timeout_s: float | None = None) -> int:
+        return 2
+
+    def recognize_page(
+        self,
+        content: bytes,
+        mime_type: str,
+        page_number: int,
+        *,
+        timeout_s: float | None = None,
+    ) -> EnginePage:
+        self.calls.append(page_number)
+        if page_number == 1:
+            return EnginePage(text="page one")
+        # The page consumes its whole allowance and then fails transiently: the
+        # retry that a transient failure would normally earn must not be issued,
+        # because the page's window is already spent (D42).
+        self._clock.advance(JOB_LIFETIME)
+        raise EnginePageError("page_engine_error")
+
+
+def test_a_transient_page_is_not_retried_once_its_window_has_closed():
+    clock = FakeClock(START)
+    engine = DeadlineConsumingEngine(clock)
+    tracer = build(engine=engine, clock=clock)
+    job_id = submit(tracer).json()["job_id"]
+
+    assert run(tracer, job_id) == 0
+
+    # Page 2 is recognized once; the retry is refused because the allowance is
+    # spent, so the engine is not called a second time.
+    assert engine.calls == [1, 2]
+    body = result_body(tracer, job_id)
+    assert (body["state"], body["reason"]) == ("partially_succeeded", "deadline_exceeded")
+    assert [page["error_code"] for page in body["pages"]] == [None, DEADLINE_PAGE_ERROR]

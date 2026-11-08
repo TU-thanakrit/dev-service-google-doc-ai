@@ -6,6 +6,7 @@ and mapping — not that a real Google-signed token verifies against Google's ke
 That is deployment evidence (`docs/ocr-v1-contracts.md`, B2). No cloud call is made.
 """
 
+import pytest
 from fastapi import Request
 
 from app import ocr_auth
@@ -14,6 +15,10 @@ from app.ocr_tracer import MappingTeamDirectory, Principal
 
 AUDIENCE = "https://dev-ocr-service-api-example.asia-southeast1.run.app"
 SERVICE_ACCOUNT = "n8n-ocr-caller@thaiunion-ai-platform.iam.gserviceaccount.com"
+# The service account's own `sub` claim: an allowlist entry binds the pair of
+# verified claims, never the email alone (§7.3).
+SUBJECT = "1029384756"
+TEAM_KEY = f"{SERVICE_ACCOUNT}|{SUBJECT}"
 
 
 def make_request(**headers: str) -> Request:
@@ -103,13 +108,42 @@ def test_only_an_authorization_bearer_header_is_read(monkeypatch):
 def test_verified_identity_maps_to_a_stable_internal_team(monkeypatch):
     stub_verification(
         monkeypatch,
-        claims={"iss": "accounts.google.com", "email": SERVICE_ACCOUNT, "sub": "42"},
+        claims={"iss": "accounts.google.com", "email": SERVICE_ACCOUNT, "sub": SUBJECT},
     )
-    directory = MappingTeamDirectory({SERVICE_ACCOUNT: "team-ops"})
+    directory = MappingTeamDirectory({TEAM_KEY: "team-ops"})
     verified = GoogleIdTokenVerifier(audience=AUDIENCE).verify(
         make_request(Authorization="Bearer signed-id-token")
     )
 
     assert directory.team_id(verified) == "team-ops"
     # Ownership never comes from anything but the verified principal.
-    assert directory.team_id(Principal(email="other@example.com", subject="42")) is None
+    assert directory.team_id(Principal(email="other@example.com", subject=SUBJECT)) is None
+
+
+def test_a_reused_email_with_another_subject_is_not_authorized(monkeypatch):
+    # The same service-account email with a different `sub`: a forged subject
+    # cannot borrow an allowlisted email's team, so the lookup is unauthorized.
+    stub_verification(
+        monkeypatch,
+        claims={"iss": "accounts.google.com", "email": SERVICE_ACCOUNT, "sub": "999999999"},
+    )
+    directory = MappingTeamDirectory({TEAM_KEY: "team-ops"})
+    verified = GoogleIdTokenVerifier(audience=AUDIENCE).verify(
+        make_request(Authorization="Bearer signed-id-token")
+    )
+
+    assert verified == Principal(email=SERVICE_ACCOUNT, subject="999999999")
+    assert directory.team_id(Principal(email=SERVICE_ACCOUNT, subject="999999999")) is None
+
+
+def test_an_allowlist_key_that_is_not_an_email_and_subject_pair_is_refused():
+    # Strict parsing: a binding must carry both verified claims, so a mapping
+    # written as an email alone cannot silently authorize that email.
+    malformed = (
+        {SERVICE_ACCOUNT: "team-ops"},  # the email alone carries no subject
+        {"|x": "team-ops"},  # no email
+        {f"{SERVICE_ACCOUNT}|": "team-ops"},  # empty subject
+    )
+    for binding in malformed:
+        with pytest.raises(ValueError):
+            MappingTeamDirectory(binding)

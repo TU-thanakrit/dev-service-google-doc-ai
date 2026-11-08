@@ -52,7 +52,8 @@ from app.ocr_tracer_fakes import (
 )
 
 TEAM_ID = "team-a"
-TEAM_DIRECTORY = {"analyst-a@example.com": TEAM_ID}
+# Canonical `email|subject` keys: a binding holds both verified claims (§7.3).
+TEAM_DIRECTORY = {"analyst-a@example.com|sub-team-a": TEAM_ID}
 PRINCIPALS = {
     "tok-team-a": Principal(email="analyst-a@example.com", subject="sub-team-a"),
 }

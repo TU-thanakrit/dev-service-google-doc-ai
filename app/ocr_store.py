@@ -268,6 +268,21 @@ def _result_name(team_id: str, job_id: str, fence: int) -> str:
     return f"{_job_dir(team_id, job_id)}/result.{fence}.json"
 
 
+def _named_result(document: dict[str, Any], name: str, team_id: str, job_id: str) -> str:
+    """The result object a `final.json` names, valid only inside this job's directory.
+
+    The name is compared against the one this job's own fence derives, so a record
+    pointing at another job's result, at a path outside `jobs/{team}/{job}/`, or at
+    a differently fenced object is corruption to fail closed on, never a path to
+    follow (decode integrity).
+    """
+    fence = _field(document, "fence", int)
+    result_object = _field(document, "result_object", str)
+    if result_object != _result_name(team_id, job_id, fence):
+        raise CorruptRecord(name)
+    return result_object
+
+
 def _page_name(team_id: str, job_id: str, page_number: int) -> str:
     return f"{_job_dir(team_id, job_id)}/pages/{page_number:05d}.json"
 
@@ -383,8 +398,12 @@ def _encode_result(job: JobRecord) -> bytes:
     ).encode()
 
 
-def _decode_result(payload: bytes, name: str) -> tuple[int | None, list[PageResult]]:
+def _decode_result(payload: bytes, name: str, job_id: str) -> tuple[int | None, list[PageResult]]:
     document = _decode(payload, name)
+    if _field(document, "job_id", str) != job_id:
+        # A result object carrying another job's identity is not this job's, so it
+        # is refused rather than decoded into this job's pages (decode integrity).
+        raise CorruptRecord(name)
     raw_pages = document.get("pages")
     if not isinstance(raw_pages, list):
         raise CorruptRecord(name)
@@ -617,17 +636,20 @@ class DurableOcrStore:
 
         Only meaningful after the gate has served: inside the retention window a
         missing published result is corruption, not expiry, and fails closed with
-        the API's 500 plus an alert (§2.2, §5.4).
+        the API's 500 plus an alert (§2.2, §5.4). The named object must be this
+        job's own result — a foreign, traversing, or wrongly fenced name is
+        corruption, and the result's own embedded identity must match too.
         """
         final_name = _final_name(job.team_id, job.job_id)
         found = self.objects.read(final_name)
         if found is None:
             raise CorruptRecord(final_name)
-        result_name = _field(_decode(found[0], final_name), "result_object", str)
+        document = _decode(found[0], final_name)
+        result_name = _named_result(document, final_name, job.team_id, job.job_id)
         result = self.objects.read(result_name)
         if result is None:
             raise CorruptRecord(result_name)
-        job.pages_total, job.pages = _decode_result(result[0], result_name)
+        job.pages_total, job.pages = _decode_result(result[0], result_name, job.job_id)
 
     def _read_job(
         self, team_id: str, job_id: str, *, with_result: bool
@@ -637,12 +659,17 @@ class DurableOcrStore:
         if found is None:
             return None
         job = _decode_job(found[0], name)
+        if (job.team_id, job.job_id) != (team_id, job_id):
+            # The document carries its own identity: a record whose identity is not
+            # the path it was read from is another job's, or corrupt (decode
+            # integrity), never this job's state.
+            raise CorruptRecord(name)
 
         final_name = _final_name(team_id, job_id)
         final = self.objects.read(final_name)
         if final is not None:
             document = _decode(final[0], final_name)
-            _field(document, "result_object", str)
+            _named_result(document, final_name, team_id, job_id)
             job.state = _field(document, "state", str)
             if job.state not in FINAL_STATES:
                 raise CorruptRecord(final_name)
@@ -1123,7 +1150,7 @@ class DurableOcrStore:
             found = self.objects.read(result_name)
             if found is None:
                 raise
-            job.pages_total, job.pages = _decode_result(found[0], result_name)
+            job.pages_total, job.pages = _decode_result(found[0], result_name, job.job_id)
 
         final_name = _final_name(job.team_id, job.job_id)
         document = json.dumps(

@@ -19,6 +19,7 @@ from app.ocr_admission import (
     AdmissionLimits,
 )
 from app.ocr_pinning import WorkerPin
+from app.ocr_tracer import parse_team_key
 
 
 class OcrServiceSettings(BaseSettings):
@@ -52,6 +53,8 @@ class OcrServiceSettings(BaseSettings):
 
     # API role: the ID-token audience and the verified-principal -> team allowlist.
     api_audience: str = ""
+    # Keyed by canonical `email|subject`, so a binding carries *both* verified
+    # claims (§7.3); `_team_bindings_are_strict` rejects anything else at startup.
     teams: dict[str, str] = Field(default_factory=dict)
 
     # Admission and input bounds (issue #10; contract §2.3, §6.4, §10/D38/D40).
@@ -132,4 +135,20 @@ class OcrServiceSettings(BaseSettings):
     def _bucket_project_defaults_to_the_service_project(self) -> "OcrServiceSettings":
         if not self.bucket_project:
             self.bucket_project = self.project
+        return self
+
+    @model_validator(mode="after")
+    def _team_bindings_are_strict(self) -> "OcrServiceSettings":
+        """Every allowlist key must carry a verified `email|subject` pair (§7.3).
+
+        A malformed key would either authorize an email without its subject — the
+        forgery a reused address would defeat — or silently authorize nobody, so
+        it is a startup failure rather than a warning.
+        """
+        for key, team_id in self.teams.items():
+            email, _subject = parse_team_key(key)
+            if "@" not in email or team_id.strip() != team_id or not team_id:
+                raise ValueError(
+                    "a team binding needs an email address and a non-empty team id"
+                )
         return self

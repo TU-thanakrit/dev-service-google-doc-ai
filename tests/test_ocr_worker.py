@@ -16,7 +16,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.ocr_config import OcrServiceSettings
 from app.ocr_engine import EngineRegistry
@@ -80,7 +82,7 @@ def build(*, objects=None, acknowledge=True, launch_error=None, engine=None):
             dispatcher=dispatcher,
             clock=clock,
             verifier=FakeTokenVerifier({TOKEN: Principal(email=EMAIL, subject="sub-a")}),
-            directory=MappingTeamDirectory({EMAIL: TEAM}),
+            directory=MappingTeamDirectory({f"{EMAIL}|sub-a": TEAM}),
         ),
         headers={"Authorization": f"Bearer {TOKEN}"},
         raise_server_exceptions=False,
@@ -540,12 +542,33 @@ def test_ocr_settings_read_environment_with_the_ocr_prefix(monkeypatch):
     monkeypatch.setenv("OCR_PROJECT", "proj-1")
     monkeypatch.setenv("OCR_BUCKET", "dev-ocr-service-x")
     monkeypatch.setenv("OCR_WORKER_JOB_NAME", "dev-ocr-service-worker-1")
-    monkeypatch.setenv("OCR_TEAMS", '{"analyst@example.com": "team-a"}')
+    monkeypatch.setenv("OCR_TEAMS", '{"analyst@example.com|sub-a": "team-a"}')
 
     settings = OcrServiceSettings()
 
     assert (settings.project, settings.bucket) == ("proj-1", "dev-ocr-service-x")
     assert settings.bucket_project == "proj-1"
     assert settings.region == "asia-southeast1"
-    assert settings.teams == {"analyst@example.com": "team-a"}
+    # The allowlist binds the verified email *and* its subject (§7.3).
+    assert settings.teams == {"analyst@example.com|sub-a": "team-a"}
     assert settings.worker_container_name == "worker"
+
+
+def test_a_malformed_team_allowlist_fails_at_startup(monkeypatch):
+    # Strict parsing: a binding that does not carry both verified claims is a
+    # deployment fault, not an entry that silently authorizes nobody (or the
+    # wrong identity), so it fails where the settings are read.
+    monkeypatch.setenv("OCR_PROJECT", "proj-1")
+    monkeypatch.setenv("OCR_BUCKET", "dev-ocr-service-x")
+    malformed = (
+        '{"analyst@example.com": "team-a"}',       # email alone: no subject
+        '{"analyst@example.com|": "team-a"}',      # empty subject
+        '{"|sub-a": "team-a"}',                    # empty email
+        '{"analyst@example.com|sub-a": ""}',       # empty team id
+        '{"analyst@example.com|sub-a|x": "t"}',    # a third field
+    )
+
+    for value in malformed:
+        monkeypatch.setenv("OCR_TEAMS", value)
+        with pytest.raises(ValidationError):
+            OcrServiceSettings()

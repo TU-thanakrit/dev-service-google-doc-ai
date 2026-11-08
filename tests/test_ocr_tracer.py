@@ -52,8 +52,15 @@ PRINCIPALS = {
     "tok-team-b": Principal(email="analyst-b@example.com", subject="sub-team-b"),
     # Verified by Google but absent from the team allowlist (403).
     "tok-unmapped": Principal(email="outsider@example.com", subject="sub-outsider"),
+    # An allowlisted email presented with another subject: the allowlist binds the
+    # verified pair, so a reused or forged `sub` is unauthorized (403, §7.3).
+    "tok-forged-sub": Principal(email="analyst-a@example.com", subject="sub-forged"),
 }
-TEAM_DIRECTORY = {"analyst-a@example.com": TEAM_A, "analyst-b@example.com": TEAM_B}
+# Canonical `email|subject` keys: both verified claims must match an entry.
+TEAM_DIRECTORY = {
+    "analyst-a@example.com|sub-team-a": TEAM_A,
+    "analyst-b@example.com|sub-team-b": TEAM_B,
+}
 REPO_ROOT = Path(__file__).resolve().parents[1]
 START = datetime(2026, 11, 8, 4, 31, 7, tzinfo=UTC)
 PDF_BYTES = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
@@ -509,6 +516,21 @@ def test_verified_caller_without_a_team_mapping_is_forbidden():
     ):
         assert_error(response, 403, "team_not_authorized")
         assert "outsider@example.com" not in response.text
+    assert tracer.store.objects.names() == []
+
+
+def test_an_allowlisted_email_with_another_subject_is_forbidden():
+    # The verified email is allowlisted, but its `sub` is not the one bound to a
+    # team: identity is the pair, so a forged subject cannot borrow a team.
+    tracer = build_tracer(token="tok-forged-sub")
+
+    for response in (
+        submit(tracer),
+        tracer.client.get(f"/v1/ocr/jobs/{UNKNOWN_JOB}"),
+        tracer.client.get(f"/v1/ocr/jobs/{UNKNOWN_JOB}/result"),
+    ):
+        assert_error(response, 403, "team_not_authorized")
+        assert "analyst-a@example.com" not in response.text
     assert tracer.store.objects.names() == []
 
 

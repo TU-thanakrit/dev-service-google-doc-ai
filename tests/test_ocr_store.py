@@ -230,6 +230,100 @@ def test_unreadable_final_record_fails_closed(objects, store):
         store.get_job(TEAM, "job-0001")
 
 
+# --- Stored-record integrity (review: decode finding) --------------------------
+
+
+def finalized_job(store, job_id="job-0001"):
+    """A job with a published result, exactly as `publish` leaves it."""
+    job = make_job(job_id)
+    store.create_job(job)
+    job.pages_total = 0
+    job.state = "succeeded"
+    job.finalized_at = SUBMITTED_AT
+    job.expires_at = SUBMITTED_AT + timedelta(hours=24)
+    assert store.publish(job, fence=RECONCILER_FENCE) is True
+    return job
+
+
+def rewrite_object(objects, name, **fields):
+    payload, generation = objects.read(name)
+    document = json.loads(payload)
+    document.update(fields)
+    objects.replace(name, json.dumps(document).encode(), generation)
+
+
+def test_a_job_record_whose_embedded_identity_mismatches_its_path_fails_closed(objects, store):
+    # The path is what the caller asked for; the document carries its own identity.
+    # A mismatch means this object is not that job's, so it must not be served as
+    # one: the read fails closed rather than trusting the path or the document.
+    for field, value in (("job_id", "job-9999"), ("team_id", "team-b")):
+        fresh = DurableOcrStore(InMemoryObjectStore())
+        fresh.create_job(make_job("job-0001"))
+        rewrite_object(fresh.objects, "jobs/team-a/job-0001/job.json", **{field: value})
+
+        with pytest.raises(CorruptRecord):
+            fresh.get_job(TEAM, "job-0001")
+        with pytest.raises(CorruptRecord):
+            fresh.get_job_meta(TEAM, "job-0001")
+
+
+def test_a_result_object_whose_embedded_identity_mismatches_fails_closed(objects, store):
+    finalized_job(store)
+    rewrite_object(objects, "jobs/team-a/job-0001/result.0.json", job_id="job-9999")
+
+    with pytest.raises(CorruptRecord):
+        store.get_job(TEAM, "job-0001")
+
+
+def test_a_final_record_naming_another_jobs_result_fails_closed(objects, store):
+    finalized_job(store)
+    finalized_job(store, "job-0002")
+
+    rewrite_object(
+        objects,
+        "jobs/team-a/job-0001/final.json",
+        result_object="jobs/team-a/job-0002/result.0.json",
+    )
+
+    # The named object exists and decodes, so only the exact-name check refuses it.
+    assert objects.read("jobs/team-a/job-0002/result.0.json") is not None
+    with pytest.raises(CorruptRecord):
+        store.get_job(TEAM, "job-0001")
+
+
+@pytest.mark.parametrize(
+    "result_object",
+    [
+        "jobs/team-a/job-0001/../../team-b/job-0002/result.0.json",  # traversal
+        "inputs/team-a/job-0001",  # not a result object at all
+    ],
+)
+def test_a_final_record_naming_a_path_outside_the_job_directory_fails_closed(
+    objects, store, result_object
+):
+    finalized_job(store)
+
+    rewrite_object(objects, "jobs/team-a/job-0001/final.json", result_object=result_object)
+
+    with pytest.raises(CorruptRecord):
+        store.get_job(TEAM, "job-0001")
+
+
+def test_a_final_record_naming_a_different_fence_than_recorded_fails_closed(objects, store):
+    finalized_job(store)
+    payload, _ = objects.read("jobs/team-a/job-0001/result.0.json")
+    objects.create("jobs/team-a/job-0001/result.7.json", payload)
+
+    rewrite_object(
+        objects,
+        "jobs/team-a/job-0001/final.json",
+        result_object="jobs/team-a/job-0001/result.7.json",
+    )
+
+    with pytest.raises(CorruptRecord):
+        store.get_job(TEAM, "job-0001")
+
+
 def test_stored_documents_carry_the_contract_schema_version(objects, store):
     store.create_job(make_job())
 

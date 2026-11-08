@@ -35,7 +35,9 @@ response, so a `202` that only acknowledges a launch is enough to start polling.
 
 The service is private and re-verifies the caller's ID token in-process, so the
 token's audience must be exactly the service URL (`OCR_API_AUDIENCE`) and its
-identity must be mapped in `OCR_TEAMS`. The artifact uses the **GCP metadata
+identity must be mapped in `OCR_TEAMS` as `<email>|<subject>` — the pair of the
+token's verified `email` and `sub`, so a reused address with another subject is
+not authorized. The artifact uses the **GCP metadata
 server** path, which needs no credential in n8n and works only when n8n itself runs
 on GCP with the intended service account attached to its instance/VM.
 

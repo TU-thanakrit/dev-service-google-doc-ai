@@ -6,6 +6,7 @@ and no cloud client. The bodies are written from the contract
 (`docs/ocr-v1-contracts.md` §2.2, §2.4, §2.5), not produced by the code under test.
 """
 
+import hashlib
 import json
 
 import httpx
@@ -239,3 +240,51 @@ def test_a_non_json_body_is_never_copied_into_the_report(tmp_path):
     assert report["response"]["body_length"] == len(secret.encode())
     assert "private/path" not in json.dumps(report)
     assert "token=abc" not in json.dumps(report)
+
+
+# --- the default report keeps no raw key and no untrusted vocabulary ----------
+
+
+def test_the_default_report_keeps_a_one_way_hash_of_the_idempotency_key(tmp_path):
+    """The key is a caller credential: it is never persisted or printed raw.
+
+    The retry still sends the same key (deduplication is what is being verified),
+    but the report records only its one-way digest.
+    """
+    (tmp_path / "doc.pdf").write_bytes(b"%PDF-1.7\n")
+    scripted = Scripted()
+
+    report = verify(scripted, tmp_path)
+
+    sent = [r.headers["Idempotency-Key"] for r in scripted.requests if r.method == "POST"]
+    assert len(sent) == 2 and len(set(sent)) == 1
+    raw = sent[0]
+    assert "idempotency_key" not in report
+    assert raw not in json.dumps(report)
+    assert report["idempotency_key_sha256"] == hashlib.sha256(raw.encode()).hexdigest()
+
+
+def test_an_error_code_outside_the_contract_is_redacted_in_the_report(tmp_path):
+    """A response's error code is copied only when §2.7 names it."""
+    (tmp_path / "doc.pdf").write_bytes(b"%PDF-1.7\n")
+    hostile = "token=abc /home/danny/private"
+
+    def handler(request):
+        return httpx.Response(
+            400, json={"schema_version": "ocr.v1", "error": {"code": hostile}}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        report = verify_document(
+            client,
+            "https://service.example",
+            tmp_path / "doc.pdf",
+            poll_timeout_s=5.0,
+            poll_interval_s=0.01,
+            include_responses=False,
+        )
+
+    assert report["response"]["error"] == "redacted"
+    rendered = json.dumps(report)
+    assert "token=abc" not in rendered
+    assert "private" not in rendered

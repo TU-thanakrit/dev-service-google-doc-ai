@@ -69,7 +69,7 @@ def build(*, acknowledge=True, launch_error=None):
             dispatcher=dispatcher,
             clock=clock,
             verifier=FakeTokenVerifier({TOKEN: Principal(email=EMAIL, subject="demo-sub")}),
-            directory=MappingTeamDirectory({EMAIL: TEAM}),
+            directory=MappingTeamDirectory({f"{EMAIL}|demo-sub": TEAM}),
         ),
         headers={"Authorization": f"Bearer {TOKEN}"},
         raise_server_exceptions=False,
