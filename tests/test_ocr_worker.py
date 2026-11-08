@@ -333,6 +333,7 @@ def test_ocr_settings_read_environment_with_the_ocr_prefix(monkeypatch):
     settings = OcrServiceSettings()
 
     assert (settings.project, settings.bucket) == ("proj-1", "dev-ocr-service-x")
+    assert settings.bucket_project == "proj-1"
     assert settings.region == "asia-southeast1"
     assert settings.teams == {"analyst@example.com": "team-a"}
     assert settings.worker_container_name == "worker"

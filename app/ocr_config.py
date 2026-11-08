@@ -5,7 +5,7 @@ beyond the values here. Deployment is blocked (docs/ocr-v1-dispatch.md), so thes
 describe the shape a deployment will use - none of them is a verified cloud fact.
 """
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +16,9 @@ class OcrServiceSettings(BaseSettings):
 
     project: str
     bucket: str
+    # The bucket may live in another approved project than the service; unset
+    # means the bucket is in the service project.
+    bucket_project: str = ""
     region: str = "asia-southeast1"
 
     # The pinned worker identity written into every job (§8). The image revision
@@ -38,3 +41,9 @@ class OcrServiceSettings(BaseSettings):
     # override (contract §6.1). A worker runs exactly the job it was given.
     job_team_id: str = ""
     job_id: str = ""
+
+    @model_validator(mode="after")
+    def _bucket_project_defaults_to_the_service_project(self) -> "OcrServiceSettings":
+        if not self.bucket_project:
+            self.bucket_project = self.project
+        return self

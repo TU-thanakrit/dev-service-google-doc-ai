@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = OcrServiceSettings()
     session = _authorized_session()
-    store = create_gcs_ocr_store(settings.bucket, project=settings.project)
+    store = create_gcs_ocr_store(settings.bucket, project=settings.bucket_project)
     dispatcher = CloudRunJobsDispatcher(
         session=session,
         project=settings.project,
