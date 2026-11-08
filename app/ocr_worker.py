@@ -13,6 +13,7 @@ entrypoint, and the real per-job engine pin is ticket #11.
 
 import os
 
+from app.ocr_admission import AdmissionLimits
 from app.ocr_config import OcrServiceSettings
 from app.ocr_engine import build_engine
 from app.ocr_store import DurableOcrStore, Lease
@@ -27,6 +28,7 @@ def run_worker(
     team_id: str,
     job_id: str,
     owner: str,
+    limits: AdmissionLimits | None = None,
 ) -> int:
     """Run one configured job under a lease; return the process exit code.
 
@@ -37,8 +39,10 @@ def run_worker(
     protects the published result if they do (§5.4). Exits non-zero, too, for an
     attempt that reached the job at or after its deadline, which writes nothing
     and is finalized by reconciliation (§5.5, §6.2). Releases its lease on
-    completion or give-up.
+    completion or give-up. The deployment's own page bound travels here, so the
+    worker refuses an over-limit container before recognizing any page (issue #10).
     """
+    limits = limits or AdmissionLimits()
     job = store.get_job(team_id, job_id)
     if job is None or job.finalized_at is not None:
         return 1
@@ -47,7 +51,12 @@ def run_worker(
         return 1
     try:
         published = run_job(
-            store=store, engine=engine, clock=clock, team_id=team_id, job_id=job_id
+            store=store,
+            engine=engine,
+            clock=clock,
+            team_id=team_id,
+            job_id=job_id,
+            limits=limits,
         )
     finally:
         store.release_lease(job, lease)
@@ -68,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         team_id=settings.job_team_id,
         job_id=settings.job_id,
         owner=owner,
+        limits=settings.admission_limits(),
     )
 
 

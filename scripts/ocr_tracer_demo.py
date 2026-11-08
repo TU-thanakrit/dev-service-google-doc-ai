@@ -40,6 +40,10 @@ from app.ocr_tracer_fakes import (
 )
 
 PDF_BYTES = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
+# Structurally readable but encrypted: refused before a job exists (issue #10).
+ENCRYPTED_PDF = (
+    b"%PDF-1.7\n1 0 obj\n<< /Type /Page >>\nendobj\ntrailer\n<< /Encrypt 9 0 R >>\n%%EOF\n"
+)
 DEMO_TOKEN = "demo-verified-id-token"
 DEMO_EMAIL = "demo-caller@thaiunion-ai-platform.iam.gserviceaccount.com"
 START = datetime(2026, 11, 8, 4, 31, 7, tzinfo=UTC)
@@ -254,6 +258,37 @@ def main() -> int:
     actions = cleanup(store=overdue.store, clock=overdue.clock)
     print(f"     cleanup pass past the target      -> {actions}")
     assert actions == [f"overdue:demo-team/{overdue_id}", f"cleaned:demo-team/{overdue_id}"]
+
+    # Input boundary: an encrypted document is rejected on its bytes, before a job
+    # or a dispatch exists (issue #10, contract §2.3).
+    bounded = build(engine=FakeOcrEngine([EnginePage(text="bounded")]))
+    encrypted = bounded.client.post(
+        "/v1/ocr/jobs",
+        headers={"Idempotency-Key": "demo-key-enc-1"},
+        files={"file": ("locked.pdf", ENCRYPTED_PDF, "application/pdf")},
+    )
+    print(
+        f"POST /v1/ocr/jobs (encrypted pdf)   -> {encrypted.status_code}"
+        f" {encrypted.json()['error']['code']}"
+    )
+    assert encrypted.status_code == 422
+
+    # Admission bound: the global set holds one job, and a second submission is
+    # refused with a retryable 429 instead of being queued without a bound (§6.4/D40).
+    admitted = submit(bounded.client, key="demo-key-cap-1")
+    refused = submit(bounded.client, key="demo-key-cap-2")
+    print(
+        f"POST /v1/ocr/jobs (capacity full)   -> {refused.status_code}"
+        f" {refused.json()['error']['code']}"
+        f" Retry-After={refused.headers['Retry-After']}"
+    )
+    assert admitted.status_code == 202
+    assert refused.status_code == 429
+
+    bounded.dispatcher.run_pending()
+    released = submit(bounded.client, key="demo-key-cap-3")
+    print(f"POST /v1/ocr/jobs (slot released)   -> {released.status_code}")
+    assert released.status_code == 202
 
     imported = sorted(
         name

@@ -52,6 +52,16 @@ FINAL_STATES = (SUCCEEDED, PARTIALLY_SUCCEEDED, FAILED)
 # result object is create-once, so a rerun after a crash reuses it.
 RESULT_FENCE = 0
 
+# Global capacity is one serialized admission set (contract §6.4/D40): a single
+# object holding every admission, keyed by `job_id`, pruned inside the same CAS
+# write that acquires or releases an entry. Its sizes bound the object twice over.
+CAPACITY_NAME = "capacity/inflight.json"
+CAPACITY_SCHEMA_VERSION = "ocr.capacity.v1"
+MAX_ENTRY_BYTES = 512
+CAPACITY_OBJECT_BUDGET = 256 * 1024
+# A lost CAS is re-decided, not forced; exhaustion fails closed `429` (§6.4).
+MAX_CAPACITY_ATTEMPTS = 5
+
 
 class StorageUnavailable(Exception):
     """The object store could not be read or written. Rendered as 503."""
@@ -63,6 +73,19 @@ class PreconditionFailed(Exception):
 
 class CorruptRecord(Exception):
     """A stored record exists but cannot be validated. Fail closed."""
+
+
+class CapacityExceeded(Exception):
+    """Admission could not be recorded. Rendered as `429 capacity_exceeded`.
+
+    `reason` names which fail-closed rule fired — `ceiling`, `corrupt`,
+    `budget`, or `cas_exhausted` — for the operator log; it never reaches the
+    caller, whose body is the fixed allowlisted message [D20].
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,6 +419,61 @@ def _decode_page(
         text=text,
         warnings=list(warnings),
     )
+
+
+def _encode_capacity(entries: dict[str, dict[str, datetime]], now: datetime) -> bytes:
+    return json.dumps(
+        {
+            "schema_version": CAPACITY_SCHEMA_VERSION,
+            "updated_at": _iso(now),
+            "entries": {
+                job_id: {
+                    "admitted_at": _iso(entry["admitted_at"]),
+                    "deadline_at": _iso(entry["deadline_at"]),
+                    "expires_at": _iso(entry["expires_at"]),
+                }
+                for job_id, entry in entries.items()
+            },
+        }
+    ).encode()
+
+
+def _decode_capacity(payload: bytes, name: str) -> dict[str, dict[str, datetime]]:
+    """The admission set, or `CapacityExceeded` when it cannot be trusted.
+
+    An unparseable, non-UTF-8, or schema-mismatched object fails closed with no
+    automatic rebuild: any rebuild that could read the set low would reintroduce
+    the undercount the set exists to remove (§6.4, D40).
+    """
+    try:
+        document = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CapacityExceeded("corrupt") from exc
+    if not isinstance(document, dict) or document.get("schema_version") != CAPACITY_SCHEMA_VERSION:
+        raise CapacityExceeded("corrupt")
+    raw = document.get("entries")
+    if not isinstance(raw, dict):
+        raise CapacityExceeded("corrupt")
+    entries: dict[str, dict[str, datetime]] = {}
+    for job_id, entry in raw.items():
+        if not isinstance(job_id, str) or not isinstance(entry, dict):
+            raise CapacityExceeded("corrupt")
+        try:
+            entries[job_id] = {
+                "admitted_at": _parse_iso(_field(entry, "admitted_at", str)),
+                "deadline_at": _parse_iso(_field(entry, "deadline_at", str)),
+                "expires_at": _parse_iso(_field(entry, "expires_at", str)),
+            }
+        except (CorruptRecord, ValueError) as exc:
+            raise CapacityExceeded("corrupt") from exc
+    return entries
+
+
+def _live_entries(
+    entries: dict[str, dict[str, datetime]], now: datetime
+) -> dict[str, dict[str, datetime]]:
+    """Drop every entry whose own expiry has passed (§6.4): pruning only shrinks."""
+    return {job_id: entry for job_id, entry in entries.items() if entry["expires_at"] > now}
 
 
 class DurableOcrStore:
@@ -861,6 +939,81 @@ class DurableOcrStore:
         except PreconditionFailed:
             return None
 
+    # --- global capacity: one serialized admission set ------------------------
+
+    def acquire_admission(
+        self,
+        job_id: str,
+        *,
+        deadline_at: datetime,
+        now: datetime,
+        ceiling: int,
+        per_attempt_timeout: timedelta,
+    ) -> None:
+        """Ensure the admission set holds this job, or fail closed (§6.4, D40).
+
+        Read, prune, and CAS-write in one conditional write: an entry that is
+        already present is an idempotent success (a retry of an admitted job takes
+        no second slot), a full set is `CapacityExceeded`, and a lost race is
+        re-decided rather than forced. There is no enumerating recount anywhere, so
+        no path can read the set low; the only drift the protocol can produce is
+        over-reservation.
+        """
+        for _ in range(MAX_CAPACITY_ATTEMPTS):
+            found = self.objects.read(CAPACITY_NAME)
+            entries = {} if found is None else _decode_capacity(found[0], CAPACITY_NAME)
+            entries = _live_entries(entries, now)
+            if job_id in entries:
+                return
+            if len(entries) >= ceiling:
+                raise CapacityExceeded("ceiling")
+            entries[job_id] = {
+                "admitted_at": now,
+                "deadline_at": deadline_at,
+                # Self-limiting: past this instant the job can run no page work at
+                # all (§5.5), so the reservation expires with it.
+                "expires_at": deadline_at + per_attempt_timeout,
+            }
+            payload = _encode_capacity(entries, now)
+            if len(payload) > CAPACITY_OBJECT_BUDGET:
+                raise CapacityExceeded("budget")
+            try:
+                if found is None:
+                    self.objects.create(CAPACITY_NAME, payload)
+                else:
+                    self.objects.replace(CAPACITY_NAME, payload, found[1])
+            except PreconditionFailed:
+                continue
+            return
+        raise CapacityExceeded("cas_exhausted")
+
+    def release_admission(self, job_id: str, *, now: datetime) -> None:
+        """Remove this job's admission; a lost release is not a failure (§5.4).
+
+        Only the `final.json` winner releases, and a release that cannot be written
+        is left to the entry's own expiry or to reconciliation: nothing about a
+        job's outcome depends on it. An object that cannot be decoded is never
+        rewritten, because rewriting it from a partial read is exactly the
+        undercount the set exists to remove.
+        """
+        for _ in range(MAX_CAPACITY_ATTEMPTS):
+            found = self.objects.read(CAPACITY_NAME)
+            if found is None:
+                return
+            try:
+                entries = _decode_capacity(found[0], CAPACITY_NAME)
+            except CapacityExceeded:
+                return
+            live = _live_entries(entries, now)
+            if job_id not in live and live == entries:
+                return
+            live.pop(job_id, None)
+            try:
+                self.objects.replace(CAPACITY_NAME, _encode_capacity(live, now), found[1])
+            except PreconditionFailed:
+                continue
+            return
+
     # --- publication ---------------------------------------------------------
 
     def publish(self, job: JobRecord, fence: int = RESULT_FENCE) -> bool:
@@ -892,6 +1045,13 @@ class DurableOcrStore:
             self.objects.create(final_name, document)
         except PreconditionFailed:
             return False
+        # Only the winner of the `final.json` arbitration may release (§5.4 step 3),
+        # and a release that cannot be written is not a job failure: the entry
+        # self-expires, and reconciliation removes a final job's entry (§6.2, D40).
+        try:
+            self.release_admission(job.job_id, now=job.finalized_at or job.deadline_at)
+        except StorageUnavailable:
+            pass
         return True
 
     # --- cleanup -------------------------------------------------------------

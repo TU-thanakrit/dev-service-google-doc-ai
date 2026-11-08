@@ -15,7 +15,7 @@ classification, Gemini call, or structured extraction.
 | `app/ocr_engine.py` | `CommandOcrEngine` — the real per-page recognition adapter, plus `SubprocessRunner` and the injected `CommandRunner` seam |
 | `app/ocr_worker.py` | the deployed entrypoint now builds the real engine; the placeholder `FakePagesEngine` is deleted |
 | `app/ocr_config.py` | five `OCR_ENGINE_*` settings (`lang`, `raster_dpi`, `tesseract`, `tessdata_prefix`) |
-| `app/ocr_tracer.py` | one bounded guard: a container the engine cannot decode finalizes the job `failed`/`input_unreadable` instead of crashing the worker |
+| `app/ocr_tracer.py` | the worker's page bound plus one bounded guard: a container the engine cannot decode is refused (job `failed`, one page carrying the engine's own code) instead of crashing the worker |
 | `Dockerfile` | poppler-utils + Tesseract (`eng`, `tha`) + ImageMagick, and an unprivileged runtime user |
 | `tests/test_ocr_engine.py` | 25 fake-runner tests at the S3 seam and the worker seam |
 | `tests/test_ocr_engine_integration.py` | 7 env-gated tests against the real installed binaries and the tracked fixtures |
@@ -87,9 +87,13 @@ is **ticket #11's**; these ceilings only stop one hung binary from stalling an a
 | decode/render non-zero, unparsable count, no/extra page image, bad frame index, unsupported type, `page_number` out of range | `malformed_document` | no | `input_unreadable` |
 | command timeout, spawn failure, `tesseract` non-zero | `page_engine_error` | yes, `PAGE_RETRIES` | `engine_unavailable` |
 
-A container the engine cannot decode at all (`page_count` fails) has **no page to
-number**, so the job is finalized `failed`/`input_unreadable` with `page_count: 0`
-and `pages: []` — never a crash and never an invented page (§5.6, §9 scenario 14).
+A container the engine cannot decode at all (`page_count` fails) is refused before
+any page is recognized: the job is finalized `failed` and the one published page
+carries the engine's own closed-set code (`malformed_document`, or `page_engine_error`
+→ `engine_unavailable` when a decode command timed out or could not be spawned). No
+source page is enumerated and none beyond that single refusal is invented (§5.6, §9
+scenario 14); the resulting per-source-page accounting deviation, and the worker's
+own page bound that uses the same refusal, are stated in `docs/ocr-v1-admission.md`.
 
 ## Container
 
@@ -118,9 +122,9 @@ Offline (fakes only, no binary executed, no cloud client constructed):
   `U+FFFD` fallback, both page-failure categories, TIFF frame indexing, strict
   timeouts and child env, allowlisted-only logging, plus the S1/S3 worker test that
   every source page is accounted for in order with its `text_source`, and the
-  undecodable-container finalization.
-- `uv run pytest` → **201 passed, 8 skipped** at this slice's commit (207 passed,
-  8 skipped after merging the current integration tip); `uv run ruff check .` →
+  undecodable-container refusal that publishes the engine's own page code.
+- `uv run pytest` → **201 passed, 8 skipped** at this slice's commit (**240 passed,
+  8 skipped** with issue #10's admission slice merged on top); `uv run ruff check .` →
   clean; `uv lock --check` → current; `scripts/ocr_tracer_demo.py` and
   `scripts/ocr_worker_demo.py` → exit 0 with no cloud module imported.
 
@@ -172,5 +176,6 @@ is tracked.
 
 Per-job engine pin enforcement and the template comparison (#11), the
 deadline-scoped page timeout and lease-heartbeat renewal (#11), submission-time
-structural/encrypted/size validation (#10), and the numeric limits gated by the
+structural/encrypted/size validation (#10, since merged into this branch and
+stated in `docs/ocr-v1-admission.md`), and the numeric limits gated by the
 benchmark ([B3]).

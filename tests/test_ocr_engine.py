@@ -448,8 +448,11 @@ def test_an_undecodable_container_fails_the_job_as_unreadable_input():
     body = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json()
     assert body["state"] == "failed"
     assert body["reason"] == "input_unreadable"
-    assert body["page_count"] == 0
-    assert body["pages"] == []
+    # One refused page carries the engine's own closed-set code, so the caller
+    # learns why the container was refused; the document is never enumerated, so
+    # no page beyond the one refusal is invented (§2.6, §9 scenario 14).
+    assert body["page_count"] == 1
+    assert [page["error_code"] for page in body["pages"]] == ["malformed_document"]
     assert "text" not in body
 
 
