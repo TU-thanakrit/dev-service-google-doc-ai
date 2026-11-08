@@ -2,9 +2,10 @@
 
 Issue: `TU-thanakrit/dev-service-google-doc-ai` #1 *OCR v1: freeze contracts and recovery design*.
 Worktree `/home/danny/service_google_doc_ai/.worktrees/ocr-v1-contracts`, branch
-`task/ocr-v1-contracts`. Development/testing target: personal project `proud-quasar-351116`, account
-`pb.danny@gmail.com`, region `asia-southeast1`, new-resource prefix `dev-ocr-service`. Corporate
-`thaiunion-ai-platform` stays a separate future deployment.
+`task/ocr-v1-contracts`. Current development/testing target: project `thaiunion-ai-platform`, account
+`thanakrit.boonquarmdee@thaiunion.com`, region `asia-southeast1`, new-resource prefix
+`dev-ocr-service`. The user restored this target after a temporary personal-project plan; exact
+resource-level deployment permissions remain evidence to verify.
 
 rev 6 replaced the rev 5 draft (`docs/ocr-v1-technical-design.md`), which is kept as history and marked
 superseded. That replacement added no capability: every change was a contract correction, a removed
