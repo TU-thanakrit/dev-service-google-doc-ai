@@ -65,11 +65,13 @@ a new job may be created.
 
 ## Not implemented in this slice
 
-Named so they are not mistaken for done: worker lease and fencing
-(`claim.json`), global capacity admission (`capacity/inflight.json`), real Cloud
-Run dispatch and template pin verification, per-page checkpoints, reconciliation,
-cleanup/deletion, and the deadline repair of a job whose finalization was lost.
-Retention and deletion semantics above describe the gate, not a cleanup job.
+Named so they are not mistaken for done. Worker lease/fencing, Cloud Run dispatch,
+and reconciliation are now added by issue #6 (`docs/ocr-v1-dispatch.md`): a
+fenced `claim.json` lease, a `jobs:run` dispatcher adapter, and a reconcile
+entrypoint exist, but the template pin comparison, per-page checkpoints, global
+capacity admission (`capacity/inflight.json`), and cleanup/deletion are still
+absent. Retention and deletion semantics above describe the gate, not a cleanup
+job.
 
 ## Verification
 

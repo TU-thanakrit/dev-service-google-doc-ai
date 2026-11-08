@@ -11,6 +11,7 @@ from collections.abc import Mapping
 
 from fastapi import Request
 
+from app.ocr_dispatch import LaunchNotRetryable
 from app.ocr_store import (
     DurableOcrStore,
     JobRecord,
@@ -36,6 +37,9 @@ class InMemoryObjectStore:
 
     def names(self) -> list[str]:
         return sorted(self._objects)
+
+    def list_names(self, prefix: str) -> list[str]:
+        return [name for name in sorted(self._objects) if name.startswith(prefix)]
 
     def read(self, name: str) -> tuple[bytes, int] | None:
         return self._objects.get(name)
@@ -96,17 +100,23 @@ class ControllableDispatcher:
         engine: OcrEngine,
         clock: Clock,
         acknowledge: bool = True,
+        launch_error: str | None = None,
     ) -> None:
         self._store = store
         self._engine = engine
         self._clock = clock
         self._acknowledge = acknowledge
+        self._launch_error = launch_error
         self.engine_ref = FAKE_ENGINE_REF
         self.worker_revision_digest = FAKE_WORKER_REVISION_DIGEST
         self.pending: list[tuple[str, str]] = []
 
     def dispatch(self, job: JobRecord) -> str | None:
         self.pending.append((job.team_id, job.job_id))
+        if self._launch_error is not None:
+            # The non-retryable launch case (§6.1 step 5): the fake never starts
+            # an execution, so reconciliation is the only actor that can end it.
+            raise LaunchNotRetryable(self._launch_error)
         # A stable fake execution reference, the way Cloud Run names an execution
         # under the launched job; `acknowledge=False` is the lost-launch case.
         return f"fake-execution-{job.job_id}" if self._acknowledge else None

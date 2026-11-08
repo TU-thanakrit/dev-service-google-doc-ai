@@ -18,6 +18,7 @@ from typing import Annotated, Any, Protocol
 from fastapi import FastAPI, File, Header, Request, UploadFile
 from fastapi.responses import JSONResponse
 
+from app.ocr_dispatch import Dispatcher, launch
 from app.ocr_store import (
     FAILED,
     MATERIALIZATION_GRACE,
@@ -139,21 +140,6 @@ class OcrEngine(Protocol):
     """
 
     def recognize(self, content: bytes, mime_type: str) -> EngineResult: ...
-
-
-class Dispatcher(Protocol):
-    """Records the launch intent for a job and pins the worker that runs it.
-
-    `engine_ref` and `worker_revision_digest` are the fake, stable per-worker
-    identity written once into every job (contract §8); comparing them against a
-    real Cloud Run template is a later ticket. Implementations must return
-    without running recognition: submission answers before recognition completes.
-    """
-
-    engine_ref: str
-    worker_revision_digest: str
-
-    def dispatch(self, job: JobRecord) -> str | None: ...
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -316,7 +302,7 @@ def _new_job(
 def _record_dispatch(store: DurableOcrStore, dispatcher: Dispatcher, job: JobRecord) -> None:
     """Only the creator of the dispatch intent launches the worker (contract §6.1)."""
     if store.create_dispatch(job) is not None:
-        store.record_dispatch_ack(job, dispatcher.dispatch(job))
+        launch(store, dispatcher, job)
 
 
 def _materialize(
@@ -501,7 +487,7 @@ def run_job(
     if now >= job.deadline_at:
         # No page work is allowed at or after the deadline, so nothing is
         # recognized and the job is finalized as it stands.
-        _finalize_deadline(job, now)
+        finalize_deadline(job, now)
         store.publish(job)
         return
 
@@ -513,7 +499,7 @@ def run_job(
     result = engine.recognize(content, job.mime_type)
     now = clock.now()
     if now >= job.deadline_at:
-        _finalize_deadline(job, now)
+        finalize_deadline(job, now)
     else:
         job.pages_total = len(result.pages)
         job.pages = [
@@ -525,7 +511,7 @@ def run_job(
     store.publish(job)
 
 
-def _finalize_deadline(job: JobRecord, now: datetime) -> None:
+def finalize_deadline(job: JobRecord, now: datetime) -> None:
     """Finalize a job at or after its deadline; never `succeeded` (D42).
 
     Partial page results belong to ticket #8, so this slice publishes no pages

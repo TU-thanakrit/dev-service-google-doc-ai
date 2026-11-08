@@ -14,6 +14,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.ocr_store import (
+    DISPATCH_ATTEMPT_CAP,
+    DISPATCH_SPACING,
+    LEASE_TTL,
     CorruptRecord,
     DurableOcrStore,
     JobRecord,
@@ -234,3 +237,106 @@ def test_stored_documents_carry_the_contract_schema_version(objects, store):
     assert document["schema_version"] == "ocr.v1"
     assert document["idempotency_key_hash"] == KEY_HASH
     assert document["state"] == "accepted"
+
+
+# --- Lease and dispatch bookkeeping (issue #6, contract §5.3, §6.1) ---------------
+
+
+def test_a_lease_is_create_once_and_a_live_holder_blocks_takeover(store):
+    job = make_job()
+    store.create_job(job)
+
+    first = store.acquire_lease(job, owner="exec-1", now=SUBMITTED_AT)
+
+    assert first.fence == 1
+    # A second execution arriving while the lease is live claims nothing.
+    assert store.acquire_lease(job, owner="exec-2", now=SUBMITTED_AT) is None
+    assert store.live_lease(job, SUBMITTED_AT).owner == "exec-1"
+
+    store.release_lease(job, first)
+    assert store.read_lease(job) is None
+
+
+def test_an_expired_lease_is_taken_over_with_a_higher_fence(store):
+    job = make_job()
+    store.create_job(job)
+    first = store.acquire_lease(job, owner="exec-1", now=SUBMITTED_AT)
+    later = SUBMITTED_AT + LEASE_TTL + timedelta(seconds=1)
+
+    assert store.live_lease(job, later) is None
+    second = store.acquire_lease(job, owner="exec-2", now=later)
+
+    assert second.fence == 2
+    # The superseded holder's conditional release is skipped, not forced.
+    store.release_lease(job, first)
+    assert store.read_lease(job).owner == "exec-2"
+    assert store.live_lease(job, later).owner == "exec-2"
+
+
+def test_dispatch_attempts_are_counted_capped_and_spaced(store):
+    job = make_job()
+    store.create_job(job)
+
+    assert store.create_dispatch(job) is not None
+    assert store.get_job(TEAM, job.job_id).attempts == 1
+    # Too soon: less than the least spacing since the last attempt.
+    assert store.claim_next_attempt(job, SUBMITTED_AT + timedelta(minutes=1)) is None
+
+    assert store.claim_next_attempt(job, SUBMITTED_AT + DISPATCH_SPACING) is not None
+    assert store.get_job(TEAM, job.job_id).attempts == 2
+    # The attempt cap is reached; no further launch, however long the wait.
+    assert store.claim_next_attempt(job, SUBMITTED_AT + DISPATCH_SPACING * 4) is None
+    assert store.get_job(TEAM, job.job_id).attempts == DISPATCH_ATTEMPT_CAP
+
+
+def test_a_recorded_launch_error_is_cleared_by_a_later_acknowledgment(store):
+    job = make_job()
+    store.create_job(job)
+    store.create_dispatch(job)
+
+    store.record_dispatch_error(job, "engine_unavailable")
+    view = store.get_job(TEAM, job.job_id)
+    assert (view.acknowledged, view.execution_ref, view.last_error_code) == (
+        False,
+        None,
+        "engine_unavailable",
+    )
+
+    store.record_dispatch_ack(job, "exec-9")
+    view = store.get_job(TEAM, job.job_id)
+    assert (view.acknowledged, view.execution_ref, view.last_error_code) == (True, "exec-9", None)
+
+
+def test_list_jobs_enumerates_every_team_and_ignores_non_job_objects(store):
+    store.create_job(make_job("job-1"))
+    other = JobRecord(
+        job_id="job-2",
+        team_id="team-b",
+        accepted_at=SUBMITTED_AT,
+        deadline_at=SUBMITTED_AT + timedelta(hours=24),
+        content_hash="hash-b",
+        byte_length=7,
+        key_hash=KEY_HASH,
+        mime_type="image/png",
+        engine_ref="engine-v1",
+        worker_revision_digest="rev-1",
+    )
+    store.create_job(other)
+    store.create_claim(TEAM, KEY_HASH, claim_for())
+
+    listed = store.list_jobs()
+
+    assert [(job.team_id, job.job_id) for job in listed] == [
+        ("team-a", "job-1"),
+        ("team-b", "job-2"),
+    ]
+
+
+def test_a_corrupt_job_record_fails_the_enumeration_closed(objects, store):
+    store.create_job(make_job("job-1"))
+    name = "jobs/team-a/job-1/job.json"
+    _, generation = objects.read(name)
+    objects.replace(name, b"{not json", generation)
+
+    with pytest.raises(CorruptRecord):
+        store.list_jobs()
