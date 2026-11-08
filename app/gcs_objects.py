@@ -35,6 +35,12 @@ class GcsObjects:
             raise StorageUnavailable(name) from exc
         return blob.download_as_bytes(), int(blob.generation)
 
+    def list_names(self, prefix: str) -> list[str]:
+        try:
+            return [blob.name for blob in self._bucket.list_blobs(prefix=prefix)]
+        except GoogleAPIError as exc:
+            raise StorageUnavailable(prefix) from exc
+
     def create(self, name: str, payload: bytes) -> int:
         return self._upload(name, payload, if_generation_match=0)
 

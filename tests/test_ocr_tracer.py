@@ -994,3 +994,27 @@ def test_a_failed_input_write_compensates_only_the_creators_own_records():
     assert retried.status_code == 202
     assert len([name for name in objects.names() if name.endswith("job.json")]) == 1
 
+
+def test_a_launch_acknowledgment_is_not_ocr_completion():
+    tracer = build_tracer()
+    submitted = submit(tracer)
+    job_id = submitted.json()["job_id"]
+
+    # Acceptance and a launch acknowledgment, with nothing processed yet.
+    assert submitted.json()["state"] == "accepted"
+    assert submitted.json()["dispatch"]["acknowledged"] is True
+    assert tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").status_code == 202
+
+    # Only the worker's publication completes the job.
+    run_job(
+        store=tracer.store,
+        engine=tracer.engine,
+        clock=tracer.clock,
+        team_id=TEAM_ID,
+        job_id=job_id,
+    )
+
+    result = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result")
+    assert result.status_code == 200
+    assert result.json()["state"] == "succeeded"
+

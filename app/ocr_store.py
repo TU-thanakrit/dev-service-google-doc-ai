@@ -20,7 +20,7 @@ missing dispatch intent), which is the property the tests in
 """
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
@@ -30,6 +30,14 @@ SCHEMA_VERSION = "ocr.v1"
 # absent is treated as a crash-window retry inside this window and as a stale
 # record beyond it.
 MATERIALIZATION_GRACE = timedelta(minutes=5)
+
+# Lease and dispatch bounds (contract §5.3, §6.1 step 4; values benchmark-gated,
+# B3). The fake engine finishes well inside one TTL, so heartbeat renewal of a
+# running attempt is not implemented: shortcut -> mid-attempt lease renewal
+# belongs with the real engine and its per-attempt timeout (ticket #11).
+LEASE_TTL = timedelta(minutes=5)
+DISPATCH_ATTEMPT_CAP = 2
+DISPATCH_SPACING = timedelta(minutes=5)
 
 ACCEPTED = "accepted"
 RUNNING = "running"
@@ -57,6 +65,18 @@ class CorruptRecord(Exception):
     """A stored record exists but cannot be validated. Fail closed."""
 
 
+@dataclass(frozen=True, slots=True)
+class Lease:
+    """One execution's claim on a job: its identity and fencing counter (§5.3)."""
+
+    job_id: str
+    owner: str
+    fence: int
+    lease_expires_at: datetime
+    heartbeat_at: datetime
+    generation: int
+
+
 class ObjectStore(Protocol):
     """The injected storage client seam: single-object atomicity plus generations.
 
@@ -71,6 +91,8 @@ class ObjectStore(Protocol):
     def replace(self, name: str, payload: bytes, generation: int) -> int: ...
 
     def delete(self, name: str, generation: int) -> None: ...
+
+    def list_names(self, prefix: str) -> list[str]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,8 +142,11 @@ class JobRecord:
     state: str = ACCEPTED
     pages_total: int | None = None
     pages: list[PageResult] = field(default_factory=list)
+    attempts: int = 0
+    last_attempt_at: datetime | None = None
     execution_ref: str | None = None
     acknowledged: bool = False
+    last_error_code: str | None = None
     finalized_at: datetime | None = None
     expires_at: datetime | None = None
     reason: str | None = None
@@ -172,6 +197,10 @@ def _dispatch_name(team_id: str, job_id: str) -> str:
     return f"{_job_dir(team_id, job_id)}/dispatch.json"
 
 
+def _lease_name(team_id: str, job_id: str) -> str:
+    return f"{_job_dir(team_id, job_id)}/claim.json"
+
+
 def _final_name(team_id: str, job_id: str) -> str:
     return f"{_job_dir(team_id, job_id)}/final.json"
 
@@ -199,6 +228,31 @@ def _decode_claim(payload: bytes, name: str) -> Claim:
         content_hash=_field(document, "content_hash", str),
         byte_length=_field(document, "byte_length", int),
         claimed_at=_parse_iso(_field(document, "claimed_at", str)),
+    )
+
+
+def _encode_lease(lease: Lease) -> bytes:
+    return json.dumps(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "job_id": lease.job_id,
+            "owner": lease.owner,
+            "fence": lease.fence,
+            "lease_expires_at": _iso(lease.lease_expires_at),
+            "heartbeat_at": _iso(lease.heartbeat_at),
+        }
+    ).encode()
+
+
+def _decode_lease(payload: bytes, name: str, generation: int) -> Lease:
+    document = _decode(payload, name)
+    return Lease(
+        job_id=_field(document, "job_id", str),
+        owner=_field(document, "owner", str),
+        fence=_field(document, "fence", int),
+        lease_expires_at=_parse_iso(_field(document, "lease_expires_at", str)),
+        heartbeat_at=_parse_iso(_field(document, "heartbeat_at", str)),
+        generation=generation,
     )
 
 
@@ -383,8 +437,19 @@ class DurableOcrStore:
         dispatch = self.objects.read(dispatch_name)
         if dispatch is not None:
             document = _decode(dispatch[0], dispatch_name)
+            attempts = document.get("attempts")
+            if not isinstance(attempts, int):
+                raise CorruptRecord(dispatch_name)
+            last_attempt_at = document.get("last_attempt_at")
+            job.attempts = attempts
+            job.last_attempt_at = (
+                None
+                if last_attempt_at is None
+                else _parse_iso(_field(document, "last_attempt_at", str))
+            )
             job.acknowledged = bool(document.get("acknowledged"))
             job.execution_ref = document.get("execution_ref")
+            job.last_error_code = document.get("last_error_code")
         return job
 
     def mark_running(self, job: JobRecord) -> None:
@@ -408,6 +473,93 @@ class DurableOcrStore:
         if found is None:
             raise PreconditionFailed(name)
         self.objects.delete(name, found[1])
+
+    def list_jobs(self) -> list[JobRecord]:
+        """Every job of every team, for reconciliation (an operator-side scan).
+
+        A record that cannot be validated raises `CorruptRecord`: the caller
+        fails closed for the pass rather than reconciling from an undecidable
+        record. Enumeration reads `job.json` only; `get_job` adds dispatch and
+        final state.
+        """
+        jobs: list[JobRecord] = []
+        for name in self.objects.list_names("jobs/"):
+            parts = name.split("/")
+            if len(parts) != 4 or parts[3] != "job.json":
+                continue
+            job = self.get_job(parts[1], parts[2])
+            if job is not None:
+                jobs.append(job)
+        return jobs
+
+    # --- lease ---------------------------------------------------------------
+
+    def read_lease(self, job: JobRecord) -> Lease | None:
+        name = _lease_name(job.team_id, job.job_id)
+        found = self.objects.read(name)
+        if found is None:
+            return None
+        return _decode_lease(found[0], name, found[1])
+
+    def live_lease(self, job: JobRecord, now: datetime) -> Lease | None:
+        """The job's lease while it is still live, else `None` (contract §5.3)."""
+        lease = self.read_lease(job)
+        return lease if lease is not None and lease.lease_expires_at > now else None
+
+    def acquire_lease(
+        self, job: JobRecord, *, owner: str, now: datetime, ttl: timedelta = LEASE_TTL
+    ) -> Lease | None:
+        """Claim the job for one execution (contract §5.3).
+
+        Create-once with `fence: 1`; on `412` take over an expired lease by
+        CAS-replacing it at the generation read with `fence + 1`, or return
+        `None` when another execution still holds a live lease. Only the creator
+        of the lease may launch, and a `None` here means a duplicate launch must
+        write nothing and exit.
+        """
+        name = _lease_name(job.team_id, job.job_id)
+        fresh = Lease(
+            job_id=job.job_id,
+            owner=owner,
+            fence=1,
+            lease_expires_at=now + ttl,
+            heartbeat_at=now,
+            generation=0,
+        )
+        try:
+            return replace(fresh, generation=self.objects.create(name, _encode_lease(fresh)))
+        except PreconditionFailed:
+            pass
+        current = self.objects.read(name)
+        if current is None:
+            return None
+        held = _decode_lease(current[0], name, current[1])
+        if held.lease_expires_at > now:
+            return None
+        taken = replace(
+            held,
+            owner=owner,
+            fence=held.fence + 1,
+            lease_expires_at=now + ttl,
+            heartbeat_at=now,
+        )
+        try:
+            generation = self.objects.replace(name, _encode_lease(taken), current[1])
+            return replace(taken, generation=generation)
+        except PreconditionFailed:
+            return None
+
+    def release_lease(self, job: JobRecord, lease: Lease) -> None:
+        """Conditional delete at the generation read; a lost race is skipped.
+
+        A `412` means the lease was taken over or already removed, so this holder
+        must stop rather than force the delete (contract §5.3 step 4).
+        """
+        name = _lease_name(job.team_id, job.job_id)
+        try:
+            self.objects.delete(name, lease.generation)
+        except PreconditionFailed:
+            pass
 
     # --- input ---------------------------------------------------------------
 
@@ -441,9 +593,11 @@ class DurableOcrStore:
             {
                 "schema_version": SCHEMA_VERSION,
                 "job_id": job.job_id,
-                "attempted_at": _iso(job.accepted_at),
+                "attempts": 1,
+                "last_attempt_at": _iso(job.accepted_at),
                 "acknowledged": False,
                 "execution_ref": None,
+                "last_error_code": None,
             }
         ).encode()
         try:
@@ -452,6 +606,12 @@ class DurableOcrStore:
             return None
 
     def record_dispatch_ack(self, job: JobRecord, execution_ref: str | None) -> None:
+        """Record the launch outcome. Acknowledgment is diagnostic, not completion.
+
+        `acknowledged` is false for both 'no launch accepted yet' and 'persisted
+        after a failed launch' [D31]; OCR completion is observed only from
+        `final.json` (contract §6.1).
+        """
         name = _dispatch_name(job.team_id, job.job_id)
         found = self.objects.read(name)
         if found is None:
@@ -459,10 +619,58 @@ class DurableOcrStore:
         document = _decode(found[0], name)
         document["acknowledged"] = execution_ref is not None
         document["execution_ref"] = execution_ref
+        document["last_error_code"] = None
         try:
             self.objects.replace(name, json.dumps(document).encode(), found[1])
         except PreconditionFailed:
             pass
+
+    def record_dispatch_error(self, job: JobRecord, error_code: str) -> None:
+        """Record a non-retryable launch error; reconciliation finalizes the job."""
+        name = _dispatch_name(job.team_id, job.job_id)
+        found = self.objects.read(name)
+        if found is None:
+            raise PreconditionFailed(name)
+        document = _decode(found[0], name)
+        document["acknowledged"] = False
+        document["execution_ref"] = None
+        document["last_error_code"] = error_code
+        try:
+            self.objects.replace(name, json.dumps(document).encode(), found[1])
+        except PreconditionFailed:
+            pass
+
+    def claim_next_attempt(self, job: JobRecord, now: datetime) -> int | None:
+        """Claim one further dispatch attempt, or `None` (contract §6.1 step 4).
+
+        A further attempt needs a non-final job past `DISPATCH_SPACING` since the
+        last attempt with attempts left under `DISPATCH_ATTEMPT_CAP`; the lease
+        check is the caller's, because only it knows the clock and the job. The
+        CAS on the generation read is what stops two reconcilers launching twice.
+        """
+        name = _dispatch_name(job.team_id, job.job_id)
+        found = self.objects.read(name)
+        if found is None:
+            return None
+        document = _decode(found[0], name)
+        attempts = document.get("attempts")
+        if not isinstance(attempts, int) or attempts >= DISPATCH_ATTEMPT_CAP:
+            return None
+        last_attempt_at = document.get("last_attempt_at")
+        if last_attempt_at is not None:
+            if now - _parse_iso(_field(document, "last_attempt_at", str)) < DISPATCH_SPACING:
+                return None
+        document.update(
+            attempts=attempts + 1,
+            last_attempt_at=_iso(now),
+            acknowledged=False,
+            execution_ref=None,
+            last_error_code=None,
+        )
+        try:
+            return self.objects.replace(name, json.dumps(document).encode(), found[1])
+        except PreconditionFailed:
+            return None
 
     # --- publication ---------------------------------------------------------
 

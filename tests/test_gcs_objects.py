@@ -9,6 +9,7 @@ configuration; that evidence is the blocked integration test in
 """
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from google.api_core.exceptions import Forbidden, NotFound
@@ -71,6 +72,11 @@ class FakeBucket:
     def blob(self, name):
         return FakeBlob(self, name)
 
+    def list_blobs(self, prefix=""):
+        self.fail_if_denied(prefix)
+        matching = [name for name in sorted(self.objects) if name.startswith(prefix)]
+        return [SimpleNamespace(name=name) for name in matching]
+
     def next_generation(self):
         self._generation += 1
         return self._generation
@@ -127,6 +133,18 @@ def test_missing_object_reads_as_absent(objects):
     assert objects.read("never/written") is None
 
 
+def test_list_names_returns_only_the_matching_prefix(objects):
+    objects.create("jobs/team-a/job-1/job.json", b"{}")
+    objects.create("jobs/team-b/job-2/job.json", b"{}")
+    objects.create("idem/team-a/key", b"{}")
+
+    assert objects.list_names("jobs/") == [
+        "jobs/team-a/job-1/job.json",
+        "jobs/team-b/job-2/job.json",
+    ]
+    assert objects.list_names("nothing/") == []
+
+
 def test_backend_denial_is_a_storage_failure_not_a_precondition(objects, bucket):
     bucket.denied = True
 
@@ -136,6 +154,8 @@ def test_backend_denial_is_a_storage_failure_not_a_precondition(objects, bucket)
         objects.create("anything", b"payload")
     with pytest.raises(StorageUnavailable):
         objects.delete("anything", 1)
+    with pytest.raises(StorageUnavailable):
+        objects.list_names("jobs/")
 
 
 def test_the_durable_store_runs_over_the_gcs_adapter(bucket):
