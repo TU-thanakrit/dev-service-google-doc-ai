@@ -1,15 +1,22 @@
-"""Dev/test doubles for the OCR tracer: store, engine, dispatcher, authentication.
+"""Dev/test doubles for the OCR tracer: store, engine, dispatcher, identity.
 
-Dev/test only. These are in-memory stand-ins that hold object identity instead
-of GCS generations and conditional writes, so they are not evidence about real
-GCS behaviour (`docs/ocr-v1-contracts.md`, B1).
+Dev/test only. The in-memory object store emulates GCS single-object atomicity
+with real generations and 412s, so the durable store's conditional logic is
+exercised deterministically. It is still not evidence about real GCS behaviour
+(`docs/ocr-v1-contracts.md`, B1).
 """
 
+import threading
 from collections.abc import Mapping
 
 from fastapi import Request
 
-from app.ocr_tracer import Clock, EngineResult, JobRecord, OcrEngine, OcrStore, Principal, run_job
+from app.ocr_store import (
+    DurableOcrStore,
+    JobRecord,
+    PreconditionFailed,
+)
+from app.ocr_tracer import Clock, EngineResult, OcrEngine, Principal, run_job
 
 # Fake, stable worker identity pinned into every local job (contract §8). The real
 # per-revision pin, its template comparison, and its enforcement are ticket #11.
@@ -17,23 +24,54 @@ FAKE_ENGINE_REF = "fake-ocr-engine:v1"
 FAKE_WORKER_REVISION_DIGEST = "sha256:fake-worker-revision-0001"
 
 
-class InMemoryOcrStore:
-    """Fake store: one process, plain dicts, no generations or conditional writes."""
+class InMemoryObjectStore:
+    """Deterministic GCS-like objects: generations, create-if-absent, 412s."""
 
     def __init__(self) -> None:
-        self.jobs: dict[tuple[str, str], JobRecord] = {}
-        self.job_ids_by_key: dict[tuple[str, str], str] = {}
+        self._objects: dict[str, tuple[bytes, int]] = {}
+        self._next_generation = 1
+        # The race tests submit on two threads; nothing here may interleave a
+        # generation bump with a write.
+        self._lock = threading.Lock()
 
-    def save_job(self, job: JobRecord) -> None:
-        self.jobs[(job.team_id, job.job_id)] = job
-        self.job_ids_by_key[(job.team_id, job.key_hash)] = job.job_id
+    def names(self) -> list[str]:
+        return sorted(self._objects)
 
-    def get_job(self, team_id: str, job_id: str) -> JobRecord | None:
-        return self.jobs.get((team_id, job_id))
+    def read(self, name: str) -> tuple[bytes, int] | None:
+        return self._objects.get(name)
 
-    def find_job_by_key(self, team_id: str, key_hash: str) -> JobRecord | None:
-        job_id = self.job_ids_by_key.get((team_id, key_hash))
-        return None if job_id is None else self.jobs.get((team_id, job_id))
+    def create(self, name: str, payload: bytes) -> int:
+        with self._lock:
+            if name in self._objects:
+                raise PreconditionFailed(name)
+            return self._write(name, payload)
+
+    def replace(self, name: str, payload: bytes, generation: int) -> int:
+        with self._lock:
+            current = self._objects.get(name)
+            if current is None or current[1] != generation:
+                raise PreconditionFailed(name)
+            return self._write(name, payload)
+
+    def delete(self, name: str, generation: int) -> None:
+        with self._lock:
+            current = self._objects.get(name)
+            if current is None or current[1] != generation:
+                raise PreconditionFailed(name)
+            del self._objects[name]
+
+    def _write(self, name: str, payload: bytes) -> int:
+        generation = self._next_generation
+        self._next_generation += 1
+        self._objects[name] = (payload, generation)
+        return generation
+
+
+class InMemoryOcrStore(DurableOcrStore):
+    """The durable store over in-memory objects, shared by app restarts in tests."""
+
+    def __init__(self, objects: InMemoryObjectStore | None = None) -> None:
+        super().__init__(objects or InMemoryObjectStore())
 
 
 class FakeOcrEngine:
@@ -54,7 +92,7 @@ class ControllableDispatcher:
     def __init__(
         self,
         *,
-        store: OcrStore,
+        store: DurableOcrStore,
         engine: OcrEngine,
         clock: Clock,
         acknowledge: bool = True,
