@@ -75,8 +75,8 @@ deleter; reconciliation no longer leaves it implicit.
 
 ## Container command and args
 
-One image, three commands (`app.ocr_api`, `python -m app.ocr_worker`,
-`python -m app.ocr_reconcile`):
+One image, four commands (`app.ocr_api`, `python -m app.ocr_worker`,
+`python -m app.ocr_reconcile`, `python -m app.ocr_cleanup`):
 
 | Role | Cloud Run kind | Command / args | Notes |
 |---|---|---|---|
@@ -99,9 +99,9 @@ the pin (D43) and resolving the real execution name are **not** implemented
 ## Cross-project bucket
 
 The durable bucket may live in a different project than the service. `OCR_BUCKET_PROJECT`
-names the bucket's own project and is passed to `create_gcs_ocr_store` in all three
-compositions (`app.ocr_api`, `app.ocr_worker`, `app.ocr_reconcile`); it defaults to
-`OCR_PROJECT`, so a single-project deployment is unchanged. Only the store is
+names the bucket's own project and is passed to `create_gcs_ocr_store` in every
+composition (`app.ocr_api`, `app.ocr_worker`, `app.ocr_reconcile`, `app.ocr_cleanup`);
+it defaults to `OCR_PROJECT`, so a single-project deployment is unchanged. Only the store is
 cross-project: dispatch and reconcile still address Cloud Run jobs in `OCR_PROJECT`
 (§8), which is the service's project.
 

@@ -1,4 +1,4 @@
-"""Cross-project bucket configuration: settings and the three role compositions.
+"""Cross-project bucket configuration: settings and the four role compositions.
 
 The service runs in `thaiunion-ai-platform` while the durable bucket lives in
 another approved project, so `create_gcs_ocr_store` is opened with the bucket's
@@ -16,6 +16,7 @@ import google.auth
 import pytest
 
 from app import gcs_objects
+from app.ocr_cleanup import main as cleanup_main
 from app.ocr_config import OcrServiceSettings
 from app.ocr_reconcile import main as reconcile_main
 from app.ocr_worker import main as worker_main
@@ -32,6 +33,9 @@ class RecordingStore:
         return None
 
     def list_jobs(self) -> list:
+        return []
+
+    def list_job_ids(self) -> list:
         return []
 
 
@@ -87,6 +91,12 @@ def test_reconcile_composition_opens_the_store_in_the_bucket_project(recorded, m
     monkeypatch.setattr("app.ocr_reconcile._authorized_session", lambda: object())
 
     assert reconcile_main([]) == 0
+
+    assert recorded == {"bucket": BUCKET, "project": BUCKET_PROJECT}
+
+
+def test_cleanup_composition_opens_the_store_in_the_bucket_project(recorded):
+    assert cleanup_main([]) == 0
 
     assert recorded == {"bucket": BUCKET, "project": BUCKET_PROJECT}
 
