@@ -592,6 +592,20 @@ def _job_reason(failed: list[PageResult]) -> str:
     return "internal_error"
 
 
+def _fail_container(job: JobRecord, error_code: str, now: datetime) -> None:
+    """A container the engine cannot decode has no page to number.
+
+    The job fails as unreadable input with an empty page list rather than
+    crashing the worker or inventing a page that does not exist (§5.6 crash
+    matrix, §9 scenario 14, D22). `page_count` therefore stays honest at zero.
+    """
+    job.pages = []
+    job.state = FAILED
+    job.reason = PAGE_ERROR_REASON.get(error_code, "internal_error")
+    job.finalized_at = now
+    job.expires_at = now + RETENTION
+
+
 def _finalize_result(job: JobRecord, now: datetime) -> None:
     """Pick the honest final state for a completed attempt (§2.5, §3).
 
@@ -646,7 +660,18 @@ def run_job(
         return False
 
     store.mark_running(job, now=clock.now())
-    total = engine.page_count(content, job.mime_type)
+    try:
+        total = engine.page_count(content, job.mime_type)
+    except EnginePageError as exc:
+        # Undecodable input: nothing can be numbered, so no page is invented and
+        # the job is finalized as unreadable rather than crashing the worker.
+        now = clock.now()
+        if now >= job.deadline_at:
+            finalize_deadline(job, now)
+        else:
+            _fail_container(job, exc.code, now)
+        store.publish(job)
+        return True
     job.pages_total = total
     job.pages = _recognize_pages(store, engine, clock, job, content, total)
 

@@ -2,40 +2,21 @@
 
 The dispatcher launches this job for one configured document: the dispatch
 override carries `OCR_JOB_TEAM_ID` / `OCR_JOB_ID`. The worker claims that job's
-lease, recognizes every page with the fake engine, and publishes the result the
+lease, recognizes every page with the pinned engine, and publishes the result the
 API already serves. It never listens on a port and exits non-zero on failure, per
 the Cloud Run container runtime contract.
 
-The engine is a deterministic fake: the operator-pinned real engine and its
-enforcement are ticket #11, and `docs/ocr-v1-contracts.md` B3 (the CPU benchmark)
-still gates the real one.
+The deployed engine is the provisional DEV Tesseract adapter (`app.ocr_engine`,
+issue #7); it is replaceable behind the `OcrEngine` seam without changing this
+entrypoint, and the real per-job engine pin is ticket #11.
 """
 
-import hashlib
 import os
 
 from app.ocr_config import OcrServiceSettings
+from app.ocr_engine import build_engine
 from app.ocr_store import DurableOcrStore, Lease
-from app.ocr_tracer import Clock, EnginePage, OcrEngine, SystemClock, run_job
-
-
-class FakePagesEngine:
-    """Deterministic placeholder engine: page text derived from the input bytes.
-
-    Content-dependent so two different documents are distinguishable without
-    invoking a real OCR model. Not a recognition quality claim of any kind. The
-    fixed page count stands in for container decoding, which belongs with the real
-    engine (ticket #7).
-    """
-
-    PAGE_COUNT = 2
-
-    def page_count(self, content: bytes, mime_type: str) -> int:
-        return self.PAGE_COUNT
-
-    def recognize_page(self, content: bytes, mime_type: str, page_number: int) -> EnginePage:
-        digest = hashlib.sha256(content).hexdigest()[:12]
-        return EnginePage(text=f"fake-ocr:{digest}:page-{page_number}")
+from app.ocr_tracer import Clock, OcrEngine, SystemClock, run_job
 
 
 def run_worker(
@@ -82,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     owner = os.environ.get("CLOUD_RUN_EXECUTION") or f"local-{settings.job_id}"
     return run_worker(
         store=store,
-        engine=FakePagesEngine(),
+        engine=build_engine(settings),
         clock=SystemClock(),
         team_id=settings.job_team_id,
         job_id=settings.job_id,
