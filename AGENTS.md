@@ -4,7 +4,7 @@ This repository currently contains a synchronous FastAPI POC for Thai expense do
 
 The new service targets separate Cloud Run API and Jobs workers, GCS-backed state, private identity-based team access, and a replaceable OCR engine. Use simple, injected interfaces and test behavior at the approved API lifecycle, storage coordination, and OCR engine seams. Avoid unnecessary abstractions, never weaken isolation or content protections, and do not treat fake tests as cloud verification.
 
-For development/testing use project `proud-quasar-351116`, account `pb.danny@gmail.com`, region `asia-southeast1`, and new-resource prefix `dev-ocr-service`. Specify account/project/region explicitly; do not change global defaults. Use only public or synthetic test documents in the personal project without separate approval. The corporate project is a separate future target. Cloud provisioning, uploads, paid tests, GitHub pushes, and IAM changes require their applicable explicit approval and scoped budget.
+For development/testing use project `thaiunion-ai-platform`, account `thanakrit.boonquarmdee@thaiunion.com`, region `asia-southeast1`, and new-resource prefix `dev-ocr-service`. Specify account/project/region explicitly; do not change global defaults. Read-only checks show this account can create/update Cloud Run services and jobs, but did not return a complete build, Artifact Registry upload, bucket-create, private-IAM, or dedicated service-account attachment path; verify exact resource-level permissions and obtain missing administrator actions before provisioning. Cloud uploads, paid workload tests, GitHub pushes, and IAM changes require explicit scoped approval and budget.
 
 ## Repository map
 
