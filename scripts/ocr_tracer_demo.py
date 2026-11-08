@@ -116,7 +116,7 @@ def main() -> int:
     print(f"POST /v1/ocr/jobs                   -> {submitted.status_code} job_id={job_id}")
     print(
         f"     state={submitted.json()['state']} dispatch={submitted.json()['dispatch']}"
-        f" worker_revision={tracer.dispatcher.worker_revision_digest}"
+        f" worker_revision={tracer.dispatcher.pin.worker_revision_digest}"
     )
     assert tracer.engine.calls == [], "recognition must not run during submission"
 

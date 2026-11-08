@@ -27,9 +27,10 @@ The synchronous expense app (`app.main`) is untouched.
 Tesseract 4.1.1 with the distro `tha`+`eng` models — the measured DEV selection
 of `docs/ocr-v1-benchmark-report.md` §6. **Final / production selection remains
 blocked** (issue #2 B1/B2: the corpus is synthetic, no acceptance threshold is
-approved), and per-job engine pinning is ticket #11. The adapter's engine
-identity is the operator-only `engine_ref` of §8 and is never returned to a
-caller (D19).
+approved). The adapter's engine identity is the operator-only `engine_ref` of §8
+and is never returned to a caller (D19); it is the adapter's own declared
+identity now, and the worker resolves an accepted job's engine through it
+(issue #11, `docs/ocr-v1-pinning.md`).
 
 ## Per-page recognition
 
@@ -174,8 +175,9 @@ is tracked.
 
 ## Not in this slice
 
-Per-job engine pin enforcement and the template comparison (#11), the
-deadline-scoped page timeout and lease-heartbeat renewal (#11), submission-time
+Per-job engine and worker pinning, the engine registry, and the D43 pre-launch
+template comparison (#11, since merged and stated in `docs/ocr-v1-pinning.md`),
+the deadline-scoped page timeout and lease-heartbeat renewal (#11), submission-time
 structural/encrypted/size validation (#10, since merged into this branch and
 stated in `docs/ocr-v1-admission.md`), and the numeric limits gated by the
 benchmark ([B3]).

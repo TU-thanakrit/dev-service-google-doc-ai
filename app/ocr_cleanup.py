@@ -40,17 +40,23 @@ logger = logging.getLogger(__name__)
 
 
 def cleanup_guard(job: JobRecord, *, per_attempt_timeout: timedelta = PER_ATTEMPT_TIMEOUT):
-    """The earliest instant a pass may delete this job's objects (§6.3, D39).
+    """The earliest instant a pass may delete this job's objects (§6.3, D39, D43).
 
-    `max(expiry_bound, deadline_at + per_attempt_timeout)`: no dispatch happens at
-    or after `deadline_at`, an attempt is bounded by the per-attempt timeout, an
-    attempt that starts at or after the deadline writes nothing, and a page call is
-    abandoned at the deadline. So the last page write that can land is
-    `deadline_at + per_attempt_timeout`, and no pass may start before it — otherwise
-    a straggler could re-create objects after the pass reported completion.
+    `max(expiry_bound, deadline_at + attempt_bound)`: no dispatch happens at or
+    after `deadline_at`, an attempt is bounded by its own timeout, an attempt that
+    starts at or after the deadline writes nothing, and a page call is abandoned at
+    the deadline. So the last page write that can land is `deadline_at +
+    attempt_bound`, and no pass may start before it — otherwise a straggler could
+    re-create objects after the pass reported completion.
+
+    The bound is the later of the deployment's configured `per_attempt_timeout`
+    and the job's own pinned `task_timeout_s` (D43), because a launch sends the
+    *pinned* value as its override: a job accepted under a longer bound would
+    otherwise be guarded by a bound shorter than the attempt it can still run.
     """
     expiry_bound = job.expires_at or job.deadline_at
-    return max(expiry_bound, job.deadline_at + per_attempt_timeout)
+    attempt_bound = max(per_attempt_timeout, timedelta(seconds=job.task_timeout_s))
+    return max(expiry_bound, job.deadline_at + attempt_bound)
 
 
 def assert_cleanup_invariants(

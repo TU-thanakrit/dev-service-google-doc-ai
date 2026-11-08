@@ -109,11 +109,11 @@ the real engine, or its per-page timeout ([B1], [B3]).
 
 ## Not implemented in this slice
 
-Named so they are not mistaken for done: real container decoding, embedded-PDF
-text, and engine pin enforcement (#7, #11); per-page timeout and lease-heartbeat
-renewal (#11); numeric limits such as `page_timeout` and any backoff ([B3]);
-cleanup and expiry (#9, now in `docs/ocr-v1-lifecycle.md`: reconciliation credits
-durable page checkpoints on its deadline path, the read gate denies at
-`expires_at` even mid-cleanup, full-success inputs are deleted at once, and the
-physical deletion pass is `app/ocr_cleanup.py`). Reconciliation still does not
-resume page work.
+Named so they are not mistaken for done: real container decoding and embedded-PDF
+text (#7); per-page timeout and lease-heartbeat renewal (#11); numeric limits such
+as `page_timeout` and any backoff ([B3]); cleanup and expiry (#9, now in
+`docs/ocr-v1-lifecycle.md`: reconciliation credits durable page checkpoints on its
+deadline path, the read gate denies at `expires_at` even mid-cleanup, full-success
+inputs are deleted at once, and the physical deletion pass is `app/ocr_cleanup.py`).
+Reconciliation still does not resume page work. Engine and worker pin enforcement
+(#11) is now merged and stated in `docs/ocr-v1-pinning.md`.

@@ -87,8 +87,10 @@ the arbiter, and the cleanup guard — not by cross-object fencing (§5.3).
 2. read that job's records; a record that cannot be read is **skipped and alerted**
    (`skipped_unreadable:`) rather than deleted on an undecidable expiry;
 3. refuse the job until `cleanup_guard = max(expiry_bound, deadline_at +
-   per_attempt_timeout)`, where `expiry_bound` is `final.json.expires_at` when it
-   exists and `deadline_at` otherwise (D39);
+   attempt_bound)`, where `expiry_bound` is `final.json.expires_at` when it exists
+   and `deadline_at` otherwise (D39), and `attempt_bound` is the later of the
+   deployment's `per_attempt_timeout` and the job's own pinned `task_timeout_s`
+   (D43: the launch sends the pinned value as its override);
 4. report `overdue:` when the job's `expires_at + 1 h` has passed and its records
    are still present, then delete anyway;
 5. delete content before records, every delete conditional on the generation read:
@@ -112,10 +114,12 @@ and the next pass re-decides. A pass that finishes reports `cleaned:`. Enumerati
 is what makes this correct — a fixed deletion list would leak a second
 `result.{fence}.json` or a lease a crashed holder left behind.
 
-**Target and guard arithmetic.** `guard - expires_at = max(0, per_attempt_timeout -
+**Target and guard arithmetic.** `guard - expires_at = max(0, attempt_bound -
 (finalized_at - accepted_at))`, so the guard exceeds `expires_at` only for a job
-finalized within one per-attempt timeout of acceptance — the worst case being a job
-finalized the instant it was accepted. With the D32 invariant
+finalized within one attempt bound of acceptance — the worst case being a job
+finalized the instant it was accepted. `attempt_bound` is the deployment's
+`per_attempt_timeout`, or a longer bound when the job's own pin is longer (D43);
+the D32 arithmetic below is about the deployment's own value. With the D32 invariant
 `per_attempt_timeout + cleanup_schedule_period ≤ 1 h` (provisional 30 + 15 min,
 asserted at startup by `assert_cleanup_invariants` and in the tests), the first
 legal pass starts within one hour of `expires_at` by construction. The residual is
@@ -171,8 +175,9 @@ cleanup job, or its scheduler ([B1], [B3], [B4]).
 ## Not implemented in this slice
 
 Named so they are not mistaken for done: the capacity admission set (§6.4) and its
-B6 residual; the D43 pre-launch template comparison and real engine pinning (#11);
-numeric limits other than the provisional D21/D32 pair ([B3]); the Cloud Scheduler
-triggers themselves, the bucket policy read-back, and the alert channels ([B2],
-[B4]); lease-heartbeat renewal (#11); and resuming page work from reconciliation,
-which this slice deliberately does not do.
+B6 residual; numeric limits other than the provisional D21/D32 pair ([B3]); the
+Cloud Scheduler triggers themselves, the bucket policy read-back, and the alert
+channels ([B2], [B4]); lease-heartbeat renewal (#11); and resuming page work from
+reconciliation, which this slice deliberately does not do. The D43 pre-launch
+template comparison and real engine/worker pinning (#11) are now merged and stated
+in `docs/ocr-v1-pinning.md`.

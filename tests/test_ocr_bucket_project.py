@@ -18,12 +18,17 @@ import pytest
 from app import gcs_objects
 from app.ocr_cleanup import main as cleanup_main
 from app.ocr_config import OcrServiceSettings
+from app.ocr_pinning import PinError
 from app.ocr_reconcile import main as reconcile_main
 from app.ocr_worker import main as worker_main
 
 SERVICE_PROJECT = "thaiunion-ai-platform"
 BUCKET = "dev-ocr-service-data-asse1-1022222817897"
 BUCKET_PROJECT = "thaiunion-shared-sandbox"
+# A pinned worker revision: the API and reconcile roles refuse to start without
+# one, because a deployment that cannot name its worker cannot pin a job (§8).
+# A fake digest: nothing here is cloud evidence.
+WORKER_DIGEST = "sha256:" + "3" * 64
 
 
 class RecordingStore:
@@ -49,6 +54,7 @@ def recorded(monkeypatch):
     monkeypatch.setenv("OCR_JOB_TEAM_ID", "team-a")
     monkeypatch.setenv("OCR_JOB_ID", "job-0001")
     monkeypatch.setenv("OCR_API_AUDIENCE", "https://ocr.example")
+    monkeypatch.setenv("OCR_WORKER_REVISION_DIGEST", WORKER_DIGEST)
 
     def fake_create_gcs_ocr_store(
         bucket_name: str, *, project: str | None = None, client: object | None = None
@@ -114,3 +120,13 @@ def test_api_composition_opens_the_store_in_the_bucket_project(recorded, monkeyp
     module.build_app(OcrServiceSettings(), session=object())
 
     assert recorded == {"bucket": BUCKET, "project": BUCKET_PROJECT}
+
+
+def test_the_reconcile_composition_refuses_to_start_without_a_usable_pin(recorded, monkeypatch):
+    # Fail closed at startup: a role that cannot pin (or re-dispatch from) a usable
+    # worker revision must not run at all (§8, D43).
+    monkeypatch.delenv("OCR_WORKER_REVISION_DIGEST")
+    monkeypatch.setattr("app.ocr_reconcile._authorized_session", lambda: object())
+
+    with pytest.raises(PinError):
+        reconcile_main([])

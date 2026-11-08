@@ -6,6 +6,7 @@ describe the shape a deployment will use - none of them is a verified cloud fact
 """
 
 from datetime import timedelta
+from pathlib import Path
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,6 +18,7 @@ from app.ocr_admission import (
     MAX_UPLOAD_BYTES,
     AdmissionLimits,
 )
+from app.ocr_pinning import WorkerPin
 
 
 class OcrServiceSettings(BaseSettings):
@@ -31,13 +33,18 @@ class OcrServiceSettings(BaseSettings):
     bucket_project: str = ""
     region: str = "asia-southeast1"
 
-    # The pinned worker identity written into every job (§8). The image revision
-    # is supplied by the deployment, not chosen here.
+    # The operator's pin for newly accepted jobs (§8, D18/D43): the worker image by
+    # immutable digest, the versioned job name for that revision, and everything
+    # the launch sends. Written once into `job.json` and frozen for the job and
+    # its retries, so changing any of this changes *new* jobs only. The image and
+    # digest are supplied by the deployment, never chosen by a caller.
     worker_job_name: str = ""
     worker_container_name: str = "worker"
     worker_revision_digest: str = ""
-    engine_ref: str = "fake-ocr-engine:v1"
+    worker_args: tuple[str, ...] = ()
+    worker_env: tuple[tuple[str, str], ...] = ()
     task_timeout_s: int = 1800
+    task_max_retries: int = 0
     request_timeout_s: float = 60.0
     # The cleanup job's own schedule period, asserted against `task_timeout_s` at
     # startup (D32). The Cloud Scheduler trigger itself is deployment config.
@@ -64,13 +71,43 @@ class OcrServiceSettings(BaseSettings):
 
     # Engine role (issue #7). The provisional DEV selection is Tesseract with the
     # distro `tha`+`eng` models (`docs/ocr-v1-benchmark-report.md` §6); production
-    # selection stays blocked, and per-job pinning is ticket #11. The binary names
-    # resolve on `PATH`, and `tessdata_prefix` is only needed when the models do
-    # not sit in Tesseract's compile-time directory.
+    # selection stays blocked. The binary names resolve on `PATH`, and
+    # `tessdata_prefix` is only needed when the models do not sit in Tesseract's
+    # compile-time directory.
     engine_lang: str = "tha+eng"
     engine_raster_dpi: int = 300
     engine_tesseract: str = "tesseract"
     engine_tessdata_prefix: str | None = None
+    # `engine_ref` names the engine, models, and parameters that produce the
+    # output bytes (§8). Leave it unset and it is derived from the settings above;
+    # set it when the engine has an identity of its own (a model id or version).
+    engine_ref: str = ""
+
+    def resolved_engine_ref(self) -> str:
+        """The engine identity for new jobs (§8, D19).
+
+        Derived from the settings that change output bytes when no explicit
+        identity is configured, so an operator who changes the language or the
+        raster resolution cannot silently keep pinning checkpoints to the old
+        configuration. Only what the adapter itself reads is in the ref.
+        """
+        if self.engine_ref:
+            return self.engine_ref
+        binary = Path(self.engine_tesseract).name
+        return f"tesseract:{binary}:{self.engine_lang}:{self.engine_raster_dpi}dpi"
+
+    def pin(self) -> WorkerPin:
+        """The pin this deployment writes into each newly accepted job (§8)."""
+        return WorkerPin.build(
+            engine_ref=self.resolved_engine_ref(),
+            image=self.worker_revision_digest,
+            job_name=self.worker_job_name,
+            container_name=self.worker_container_name,
+            args=self.worker_args,
+            env=self.worker_env,
+            task_timeout_s=self.task_timeout_s,
+            task_max_retries=self.task_max_retries,
+        )
 
     def admission_limits(self) -> AdmissionLimits:
         """This deployment's input and capacity bounds.

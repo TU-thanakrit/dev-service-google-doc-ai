@@ -18,7 +18,7 @@ from google.auth.transport.requests import AuthorizedSession
 from app.gcs_objects import create_gcs_ocr_store
 from app.ocr_auth import GoogleIdTokenVerifier
 from app.ocr_config import OcrServiceSettings
-from app.ocr_dispatch import CloudRunJobsDispatcher
+from app.ocr_dispatch import CloudRunJobsDispatcher, CloudRunJobTemplateGuard
 from app.ocr_tracer import MappingTeamDirectory, SystemClock, create_ocr_tracer_app
 
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
@@ -31,11 +31,15 @@ def build_app(settings: OcrServiceSettings, *, session) -> FastAPI:
         session=session,
         project=settings.project,
         region=settings.region,
-        job_name=settings.worker_job_name,
-        container_name=settings.worker_container_name,
-        engine_ref=settings.engine_ref,
-        worker_revision_digest=settings.worker_revision_digest,
-        task_timeout_s=settings.task_timeout_s,
+        # The operator's pin for new jobs; `settings.pin()` fails closed at startup
+        # rather than accepting jobs it cannot pin (§8).
+        pin=settings.pin(),
+        guard=CloudRunJobTemplateGuard(
+            session=session,
+            project=settings.project,
+            region=settings.region,
+            request_timeout_s=settings.request_timeout_s,
+        ),
         request_timeout_s=settings.request_timeout_s,
     )
     return create_ocr_tracer_app(

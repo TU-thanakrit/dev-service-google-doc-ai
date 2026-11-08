@@ -29,11 +29,13 @@ from app.ocr_tracer import (
     create_ocr_tracer_app,
 )
 from app.ocr_tracer_fakes import (
+    FAKE_ENGINE_REF,
     ControllableDispatcher,
     FakeOcrEngine,
     FakeTokenVerifier,
     InMemoryObjectStore,
     InMemoryOcrStore,
+    fake_engine_registry,
 )
 from app.ocr_worker import run_worker
 
@@ -94,7 +96,7 @@ def submit(tracer, *, key="recovery-key-0001", content=PDF_BYTES):
 def run(tracer, job_id, *, owner="executions/exec-1"):
     return run_worker(
         store=tracer.store,
-        engine=tracer.engine,
+        engines=fake_engine_registry(tracer.engine),
         clock=tracer.clock,
         team_id=TEAM,
         job_id=job_id,
@@ -287,6 +289,8 @@ def test_an_attempt_that_starts_at_or_after_the_deadline_writes_nothing():
 
 class BlockingPageEngine:
     """Page 1 answers; page 2 blocks until the test releases it, past the deadline."""
+
+    engine_ref = FAKE_ENGINE_REF
 
     def __init__(self) -> None:
         self.entered = threading.Event()

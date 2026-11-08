@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from fastapi import Request
 
 from app.ocr_dispatch import LaunchNotRetryable
+from app.ocr_pinning import WorkerPin
 from app.ocr_store import (
     DurableOcrStore,
     JobRecord,
@@ -19,10 +20,16 @@ from app.ocr_store import (
 )
 from app.ocr_tracer import Clock, EnginePage, OcrEngine, Principal, run_job
 
-# Fake, stable worker identity pinned into every local job (contract §8). The real
-# per-revision pin, its template comparison, and its enforcement are ticket #11.
+# Fake, stable engine and worker identity pinned into every local job (contract
+# §8). A real digest, because a tag is exactly what the pin refuses.
 FAKE_ENGINE_REF = "fake-ocr-engine:v1"
-FAKE_WORKER_REVISION_DIGEST = "sha256:fake-worker-revision-0001"
+FAKE_WORKER_REVISION_DIGEST = "sha256:" + "1a2b3c4d5e6f" * 5 + "1a2b"
+FAKE_WORKER_PIN = WorkerPin.build(
+    engine_ref=FAKE_ENGINE_REF,
+    image=FAKE_WORKER_REVISION_DIGEST,
+    container_name="worker",
+    task_timeout_s=1800,
+)
 
 
 class InMemoryObjectStore:
@@ -88,8 +95,11 @@ class FakeOcrEngine:
     page number.
     """
 
-    def __init__(self, pages) -> None:
+    def __init__(self, pages, *, engine_ref: str = FAKE_ENGINE_REF) -> None:
         self._pages = tuple(pages)
+        # The fake's declared identity: two fakes with different refs are two
+        # distinguishable engine revisions for the pin tests.
+        self.engine_ref = engine_ref
         self.calls: list[int] = []
 
     def page_count(self, content: bytes, mime_type: str) -> int:
@@ -106,6 +116,18 @@ class FakeOcrEngine:
         return outcome
 
 
+def fake_engine_registry(engine: OcrEngine):
+    """The worker's registry for one fake engine, keyed by its own declared ref.
+
+    The production wiring registers this image's engine under the ref its settings
+    declare; the fake is registered the same way, so a worker test exercises the
+    same lookup with the same fail-closed outcome for an unknown ref.
+    """
+    from app.ocr_engine import EngineRegistry
+
+    return EngineRegistry({engine.engine_ref: lambda: engine})
+
+
 class ControllableDispatcher:
     """Fake dispatcher: records the launch intent and runs nothing until asked."""
 
@@ -115,16 +137,19 @@ class ControllableDispatcher:
         store: DurableOcrStore,
         engine: OcrEngine,
         clock: Clock,
+        pin: WorkerPin = FAKE_WORKER_PIN,
         acknowledge: bool = True,
         launch_error: str | None = None,
     ) -> None:
         self._store = store
         self._engine = engine
         self._clock = clock
+        # The operator's current pin for new jobs: the fake never launches, so a
+        # test can change it to model an operator revision change while an
+        # already-accepted job keeps the pin in its own record.
+        self.pin = pin
         self._acknowledge = acknowledge
         self._launch_error = launch_error
-        self.engine_ref = FAKE_ENGINE_REF
-        self.worker_revision_digest = FAKE_WORKER_REVISION_DIGEST
         self.pending: list[tuple[str, str]] = []
 
     def dispatch(self, job: JobRecord) -> str | None:
