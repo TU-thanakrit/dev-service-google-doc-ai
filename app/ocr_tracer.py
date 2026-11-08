@@ -22,6 +22,7 @@ from app.ocr_dispatch import Dispatcher, launch
 from app.ocr_store import (
     FAILED,
     MATERIALIZATION_GRACE,
+    PARTIALLY_SUCCEEDED,
     SCHEMA_VERSION,
     SUCCEEDED,
     Claim,
@@ -69,6 +70,27 @@ CONTAINER_MAGIC = (
 # Bounded re-decide on a lost idempotency race (contract §3.4): re-read, decide
 # again. Exhaustion fails closed instead of creating a second job.
 MAX_IDEMPOTENCY_ATTEMPTS = 5
+
+# Per-page recovery (issue #8). `PAGE_RETRIES` is the provisional D21 value: a
+# transient page call is re-issued at most this many times inside one attempt, so
+# no new limit is introduced here. Between-attempt backoff is deliberately absent
+# (contract §11.1: no sleep); a backoff or spaced-retry value is benchmark-gated
+# [B3] and belongs with the real engine's per-page timeout (ticket #11).
+PAGE_RETRIES = 1
+
+# Reviewed page-error categories (contract §2.7's closed vocabulary). A transient
+# page failure may recover on a retry; a permanent one (an undecodable page) never
+# can, so an unreadable document does not enter a retry loop. The job `reason` a
+# failed page maps onto comes from §2.5's closed reason set.
+TRANSIENT_PAGE_ERROR = "page_engine_error"
+PERMANENT_PAGE_ERROR = "malformed_document"
+PAGE_ERROR_REASON = {
+    TRANSIENT_PAGE_ERROR: "engine_unavailable",
+    PERMANENT_PAGE_ERROR: "input_unreadable",
+}
+# A page abandoned at the deadline still needs an entry, so it carries the
+# deadline's own code from the same closed set (§2.6, D42).
+DEADLINE_PAGE_ERROR = "deadline_exceeded"
 
 
 class Clock(Protocol):
@@ -127,19 +149,35 @@ class EnginePage:
     warnings: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class EngineResult:
-    pages: tuple[EnginePage, ...]
+class EnginePageError(Exception):
+    """One page's recognition failure, carrying its code from the closed set.
+
+    `code` is published on the failed page (§2.6/§2.7); whether the page may be
+    retried is the application's decision (see `PAGE_RETRIES` and the category
+    constants above), never the engine's, so the retry bound cannot be widened by
+    an engine's own claim.
+    """
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 class OcrEngine(Protocol):
     """Application-owned recognition adapter seam (S3).
 
-    Engine/model pinning per job is ticket #11, so no engine identity is
-    recorded or exposed here.
+    `page_count` decodes the container for its source page count without
+    recognizing anything (one page per PDF page / TIFF frame; JPEG and PNG are
+    single-page, §2.6/D24). `recognize_page` recognizes one page, so a restart
+    re-issues only the pages that are not already checkpointed (§5.5). Engine and
+    model pinning per job is ticket #11, so no engine identity is recorded here.
     """
 
-    def recognize(self, content: bytes, mime_type: str) -> EngineResult: ...
+    def page_count(self, content: bytes, mime_type: str) -> int: ...
+
+    def recognize_page(
+        self, content: bytes, mime_type: str, page_number: int
+    ) -> EnginePage: ...
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -243,6 +281,22 @@ def _page_result(page_number: int, page: EnginePage) -> PageResult:
         text_source=page.text_source,
         text=page.text.strip(),
         warnings=list(page.warnings),
+    )
+
+
+def _failed_page(page_number: int, error_code: str) -> PageResult:
+    """A failed page keeps its number and a closed-set code, and carries no text.
+
+    Failed pages are always present in the accounting and are never checkpointed,
+    so the next attempt recomputes them (§2.6/D23, D41).
+    """
+    return PageResult(
+        page_number=page_number,
+        status=FAILED,
+        text_source="ocr",
+        text=None,
+        warnings=[],
+        error_code=error_code,
     )
 
 
@@ -461,6 +515,99 @@ def _accept(
     return 202, store.get_job(team_id, job.job_id) or job
 
 
+def _is_retryable(code: str) -> bool:
+    """Only the reviewed transient category is retried.
+
+    Anything else fails the page at once, so an unreadable or misreported page
+    never enters a retry loop (issue #8; the spec leaves the categories open).
+    """
+    return code == TRANSIENT_PAGE_ERROR
+
+
+def _recognize_page(
+    engine: OcrEngine, job: JobRecord, content: bytes, page_number: int
+) -> PageResult:
+    """Recognize one page, re-issuing a transient failure up to `PAGE_RETRIES`."""
+    attempts = 0
+    while True:
+        try:
+            page = engine.recognize_page(content, job.mime_type, page_number)
+        except EnginePageError as exc:
+            if _is_retryable(exc.code) and attempts < PAGE_RETRIES:
+                attempts += 1
+                continue
+            return _failed_page(page_number, exc.code)
+        return _page_result(page_number, page)
+
+
+def _recognize_pages(
+    store: DurableOcrStore,
+    engine: OcrEngine,
+    clock: Clock,
+    job: JobRecord,
+    content: bytes,
+    total: int,
+) -> list[PageResult]:
+    """Recognize the pages without a compatible checkpoint, then account for the rest.
+
+    A page with a valid checkpoint is reused and never recomputed (D41); a page
+    not reached because the attempt crossed `deadline_at` is reported failed with
+    the deadline's code, so the result still holds one entry per source page (§2.6).
+    """
+    pages: list[PageResult] = []
+    for page_number in range(1, total + 1):
+        checkpoint = store.read_page_checkpoint(job, page_number)
+        if checkpoint is not None:
+            pages.append(checkpoint)
+            continue
+        if clock.now() >= job.deadline_at:
+            break
+        page = _recognize_page(engine, job, content, page_number)
+        if clock.now() >= job.deadline_at:
+            # The page call is abandoned at the deadline: it contributes no page
+            # and is not checkpointed (D42).
+            break
+        if page.status == SUCCEEDED:
+            store.put_page_checkpoint(job, page)
+        pages.append(page)
+    for page_number in range(len(pages) + 1, total + 1):
+        pages.append(_failed_page(page_number, DEADLINE_PAGE_ERROR))
+    return pages
+
+
+def _job_reason(failed: list[PageResult]) -> str:
+    """One reason for a non-succeeded job; a permanent page failure is the more
+    specific cause (contract §2.5's closed reason set)."""
+    codes = {page.error_code for page in failed}
+    for code in (PERMANENT_PAGE_ERROR, TRANSIENT_PAGE_ERROR):
+        if code in codes:
+            return PAGE_ERROR_REASON[code]
+    return "internal_error"
+
+
+def _finalize_result(job: JobRecord, now: datetime) -> None:
+    """Pick the honest final state for a completed attempt (§2.5, §3).
+
+    Partial output is never labelled complete and no page is dropped: a job with
+    at least one usable page is `partially_succeeded`, otherwise `failed`; both
+    carry the reason of the dominant page failure. Reason is `null` only on
+    `succeeded` (§2.5).
+    """
+    failed = [page for page in job.pages if page.status != SUCCEEDED]
+    if not failed:
+        job.state = SUCCEEDED
+        job.reason = None
+    else:
+        job.state = (
+            PARTIALLY_SUCCEEDED
+            if any(page.status == SUCCEEDED for page in job.pages)
+            else FAILED
+        )
+        job.reason = _job_reason(failed)
+    job.finalized_at = now
+    job.expires_at = now + RETENTION
+
+
 def run_job(
     *,
     store: DurableOcrStore,
@@ -468,57 +615,53 @@ def run_job(
     clock: Clock,
     team_id: str,
     job_id: str,
-) -> None:
-    """Worker step: recognize every page of one accepted job.
+) -> bool:
+    """Worker step: recognize the job's unfinished pages and finalize honestly.
 
-    Local form of the Cloud Run Job entrypoint. It reads the job before writing
-    anything and writes nothing when the job is absent, already final, or has no
-    input. It never produces `succeeded` at or after `deadline_at` (D42): a
-    worker that reaches the job past the deadline finalizes `deadline_exceeded`
-    without processing it, and one that crosses the deadline while recognizing
-    discards that attempt's pages. Per-page failure and partial finalization stay
-    with ticket #8; reconciliation of an unusable job is ticket #9.
+    Local form of the Cloud Run Job entrypoint. Returns `True` when it published a
+    final result, `False` when it wrote nothing: a job that is absent, already
+    final, or has no input, or an attempt that reaches the job at or after
+    `deadline_at` [D30, D42]. Reads the job before writing anything, reuses
+    compatible page checkpoints so only the missing pages are recomputed, and
+    never produces `succeeded` at or after the deadline.
     """
     job = store.get_job(team_id, job_id)
     if job is None or job.finalized_at is not None:
-        return
+        return False
 
-    now = clock.now()
-    if now >= job.deadline_at:
-        # No page work is allowed at or after the deadline, so nothing is
-        # recognized and the job is finalized as it stands.
-        finalize_deadline(job, now)
-        store.publish(job)
-        return
+    if clock.now() >= job.deadline_at:
+        # Never works at or after the deadline: the attempt writes nothing and
+        # exits non-zero, and reconciliation finalizes the job (§5.5, §6.2, D42).
+        return False
 
-    store.mark_running(job)
     content = store.read_input(team_id, job_id)
     if content is None:
-        return
+        return False
 
-    result = engine.recognize(content, job.mime_type)
+    store.mark_running(job)
+    total = engine.page_count(content, job.mime_type)
+    job.pages_total = total
+    job.pages = _recognize_pages(store, engine, clock, job, content, total)
+
     now = clock.now()
     if now >= job.deadline_at:
         finalize_deadline(job, now)
     else:
-        job.pages_total = len(result.pages)
-        job.pages = [
-            _page_result(number, page) for number, page in enumerate(result.pages, start=1)
-        ]
-        job.state = SUCCEEDED
-        job.finalized_at = now
-        job.expires_at = now + RETENTION
+        _finalize_result(job, now)
     store.publish(job)
+    return True
 
 
 def finalize_deadline(job: JobRecord, now: datetime) -> None:
-    """Finalize a job at or after its deadline; never `succeeded` (D42).
+    """Finalize at or after the deadline; never `succeeded` (D42).
 
-    Partial page results belong to ticket #8, so this slice publishes no pages
-    and no combined text and the outcome is `failed`.
+    Usable pages survive the deadline: a job with at least one succeeded page is
+    `partially_succeeded`, otherwise `failed`, always `deadline_exceeded` (§3).
     """
-    job.state = FAILED
-    job.reason = "deadline_exceeded"
+    job.state = (
+        PARTIALLY_SUCCEEDED if any(page.status == SUCCEEDED for page in job.pages) else FAILED
+    )
+    job.reason = DEADLINE_PAGE_ERROR
     job.finalized_at = now
     job.expires_at = now + RETENTION
 

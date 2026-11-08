@@ -340,3 +340,80 @@ def test_a_corrupt_job_record_fails_the_enumeration_closed(objects, store):
 
     with pytest.raises(CorruptRecord):
         store.list_jobs()
+
+
+# --- Page checkpoints (issue #8, contract §5.5/D41) -------------------------------
+
+
+def page_checkpoint(number=1, *, text="recognized text", status="succeeded"):
+    from app.ocr_store import PageResult
+
+    return PageResult(
+        page_number=number, status=status, text_source="ocr", text=text, warnings=[]
+    )
+
+
+def page_name(number=1):
+    return f"jobs/team-a/job-0001/pages/{number:05d}.json"
+
+
+def test_a_page_checkpoint_is_create_once_and_keeps_the_first_writer(store):
+    job = make_job()
+    store.create_job(job)
+
+    store.put_page_checkpoint(job, page_checkpoint(text="first writer"))
+    store.put_page_checkpoint(job, page_checkpoint(text="second writer"))
+
+    assert store.read_page_checkpoint(job, 1).text == "first writer"
+
+
+def test_a_checkpoint_pinned_to_another_engine_is_treated_as_absent(objects, store):
+    job = make_job()
+    store.create_job(job)
+    store.put_page_checkpoint(job, page_checkpoint())
+    _, generation = objects.read(page_name())
+    # The same page written by a differently pinned engine is not compatible (D16).
+    objects.replace(
+        page_name(),
+        json.dumps(
+            {
+                "schema_version": "ocr.v1",
+                "job_id": "job-0001",
+                "page_number": 1,
+                "status": "succeeded",
+                "text_source": "ocr",
+                "text": "other engine",
+                "warnings": [],
+                "engine_ref": "engine-other",
+            }
+        ).encode(),
+        generation,
+    )
+
+    assert store.read_page_checkpoint(job, 1) is None
+
+
+def test_an_invalid_checkpoint_is_replaced_only_at_the_generation_read(objects, store):
+    job = make_job()
+    store.create_job(job)
+    # A checkpoint that does not validate (a failed page is never one) is treated
+    # as absent and may be replaced, conditionally, by a valid one (D41).
+    objects.create(
+        page_name(),
+        json.dumps(
+            {
+                "schema_version": "ocr.v1",
+                "job_id": "job-0001",
+                "page_number": 7,
+                "status": "failed",
+                "text_source": "ocr",
+                "text": None,
+                "warnings": [],
+                "engine_ref": job.engine_ref,
+            }
+        ).encode(),
+    )
+
+    store.put_page_checkpoint(job, page_checkpoint(text="recovered"))
+
+    assert store.read_page_checkpoint(job, 1).text == "recovered"

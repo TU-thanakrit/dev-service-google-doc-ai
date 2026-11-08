@@ -179,7 +179,7 @@ def test_the_worker_writes_nothing_for_an_unknown_or_already_final_job():
     # Already final: a straggler writes nothing and exits non-zero.
     assert run(tracer, job_id) == 1
     assert tracer.objects.names() == before
-    assert len(tracer.engine.calls) == 1
+    assert len(tracer.engine.calls) == len(PAGES)
 
 
 # --- Reconciliation ----------------------------------------------------------
@@ -297,7 +297,7 @@ def test_reconcile_leaves_a_finished_job_alone():
 
     after = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json()["timestamps"]
     assert after == finalized
-    assert len(tracer.engine.calls) == 1
+    assert len(tracer.engine.calls) == len(PAGES)
 
 
 def test_a_stale_lease_holder_does_not_block_the_next_execution_forever():

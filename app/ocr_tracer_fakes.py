@@ -17,7 +17,7 @@ from app.ocr_store import (
     JobRecord,
     PreconditionFailed,
 )
-from app.ocr_tracer import Clock, EngineResult, OcrEngine, Principal, run_job
+from app.ocr_tracer import Clock, EnginePage, OcrEngine, Principal, run_job
 
 # Fake, stable worker identity pinned into every local job (contract §8). The real
 # per-revision pin, its template comparison, and its enforcement are ticket #11.
@@ -79,15 +79,31 @@ class InMemoryOcrStore(DurableOcrStore):
 
 
 class FakeOcrEngine:
-    """Fake recognition engine: returns its configured pages for the content given."""
+    """Fault-injectable per-page fake engine (seam S3).
+
+    One scripted outcome per page: an `EnginePage` (succeeds), an exception to
+    raise (`EnginePageError` for a page failure, anything else for a crash), or a
+    list of those taken one per call so a retry can be scripted. `calls` records
+    the page numbers recognized, so reuse of a checkpoint shows up as an absent
+    page number.
+    """
 
     def __init__(self, pages) -> None:
         self._pages = tuple(pages)
-        self.calls: list[tuple[bytes, str]] = []
+        self.calls: list[int] = []
 
-    def recognize(self, content: bytes, mime_type: str) -> EngineResult:
-        self.calls.append((content, mime_type))
-        return EngineResult(pages=self._pages)
+    def page_count(self, content: bytes, mime_type: str) -> int:
+        return len(self._pages)
+
+    def recognize_page(self, content: bytes, mime_type: str, page_number: int) -> EnginePage:
+        self.calls.append(page_number)
+        outcome = self._pages[page_number - 1]
+        if isinstance(outcome, (list, tuple)):
+            index = min(self.calls.count(page_number) - 1, len(outcome) - 1)
+            outcome = outcome[index]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 class ControllableDispatcher:

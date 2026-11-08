@@ -68,10 +68,11 @@ a new job may be created.
 Named so they are not mistaken for done. Worker lease/fencing, Cloud Run dispatch,
 and reconciliation are now added by issue #6 (`docs/ocr-v1-dispatch.md`): a
 fenced `claim.json` lease, a `jobs:run` dispatcher adapter, and a reconcile
-entrypoint exist, but the template pin comparison, per-page checkpoints, global
-capacity admission (`capacity/inflight.json`), and cleanup/deletion are still
-absent. Retention and deletion semantics above describe the gate, not a cleanup
-job.
+entrypoint exist, but the template pin comparison, global capacity admission
+(`capacity/inflight.json`), and cleanup/deletion are still absent. Per-page
+checkpoints, bounded page retries, and partial finalization are now added by
+issue #8 (`docs/ocr-v1-recovery.md`). Retention and deletion semantics above
+describe the gate, not a cleanup job.
 
 ## Verification
 
