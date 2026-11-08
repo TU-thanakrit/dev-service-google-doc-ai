@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         per_attempt_timeout=per_attempt_timeout,
         schedule_period=timedelta(seconds=settings.cleanup_schedule_period_s),
     )
-    store = create_gcs_ocr_store(settings.bucket, project=settings.project)
+    store = create_gcs_ocr_store(settings.bucket, project=settings.bucket_project)
     actions = cleanup(
         store=store, clock=SystemClock(), per_attempt_timeout=per_attempt_timeout
     )

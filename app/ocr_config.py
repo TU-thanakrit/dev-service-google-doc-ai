@@ -7,7 +7,7 @@ describe the shape a deployment will use - none of them is a verified cloud fact
 
 from datetime import timedelta
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.ocr_admission import (
@@ -26,6 +26,9 @@ class OcrServiceSettings(BaseSettings):
 
     project: str
     bucket: str
+    # The bucket may live in another approved project than the service; unset
+    # means the bucket is in the service project.
+    bucket_project: str = ""
     region: str = "asia-southeast1"
 
     # The pinned worker identity written into every job (§8). The image revision
@@ -72,3 +75,9 @@ class OcrServiceSettings(BaseSettings):
             capacity_ceiling=self.capacity_ceiling,
             per_attempt_timeout=timedelta(seconds=self.task_timeout_s),
         )
+
+    @model_validator(mode="after")
+    def _bucket_project_defaults_to_the_service_project(self) -> "OcrServiceSettings":
+        if not self.bucket_project:
+            self.bucket_project = self.project
+        return self
