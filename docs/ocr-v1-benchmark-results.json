@@ -1,0 +1,2089 @@
+{
+  "benchmark": "ocr-bench-v1",
+  "generated_at": "2026-11-08T11:07:33+00:00",
+  "corpus_id": "ocr-bench-synthetic-v1",
+  "corpus_manifest": "docs/ocr-v1-benchmark-corpus.json",
+  "normalisation": "ocr-bench-norm-v1",
+  "metrics": "ocr-bench-metrics-v1",
+  "synthetic": true,
+  "comparison": [
+    {
+      "engine": "tesseract-4.1.1-tessdata-best",
+      "version": "tesseract 4.1.1",
+      "pages": 15,
+      "failures": 0,
+      "micro_cer": 0.07827788649706457,
+      "page_exact_rate": 0.4,
+      "seconds_per_page": 2.785,
+      "peak_rss_mb": 77.3,
+      "peak_rss_source": "harness process",
+      "clean_en_micro_cer": 0.0,
+      "clean_th_micro_cer": 0.08024691358024691,
+      "clean_mixed_micro_cer": 0.22297297297297297,
+      "degraded_micro_cer": 0.11254019292604502,
+      "low_dpi_micro_cer": 0.037037037037037035,
+      "born_digital_micro_cer": 0.05092592592592592,
+      "dev_gates_passed": 5,
+      "dev_gates_total": 6
+    },
+    {
+      "engine": "tesseract-4.1.1-distro-langpack",
+      "version": "tesseract 4.1.1",
+      "pages": 15,
+      "failures": 0,
+      "micro_cer": 0.07632093933463796,
+      "page_exact_rate": 0.4,
+      "seconds_per_page": 0.837,
+      "peak_rss_mb": 53.2,
+      "peak_rss_source": "harness process",
+      "clean_en_micro_cer": 0.0,
+      "clean_th_micro_cer": 0.08179012345679013,
+      "clean_mixed_micro_cer": 0.21171171171171171,
+      "degraded_micro_cer": 0.10771704180064309,
+      "low_dpi_micro_cer": 0.041666666666666664,
+      "born_digital_micro_cer": 0.05092592592592592,
+      "dev_gates_passed": 5,
+      "dev_gates_total": 6
+    },
+    {
+      "engine": "rapidocr-3.10.0-ppocrv5-th",
+      "version": "3.10.0",
+      "pages": 15,
+      "failures": 0,
+      "micro_cer": 0.12426614481409001,
+      "page_exact_rate": 0.4,
+      "seconds_per_page": 2.23,
+      "peak_rss_mb": 807.1,
+      "peak_rss_source": "adapter process",
+      "clean_en_micro_cer": 0.0,
+      "clean_th_micro_cer": 0.26080246913580246,
+      "clean_mixed_micro_cer": 0.009009009009009009,
+      "degraded_micro_cer": 0.1270096463022508,
+      "low_dpi_micro_cer": 0.2962962962962963,
+      "born_digital_micro_cer": 0.30092592592592593,
+      "dev_gates_passed": 4,
+      "dev_gates_total": 6
+    },
+    {
+      "engine": "embedded-pdf-text-layer",
+      "version": "pdftotext version 21.01.0",
+      "pages": 6,
+      "failures": 0,
+      "micro_cer": 0.0395799676898223,
+      "page_exact_rate": 0.3333333333333333,
+      "seconds_per_page": 0.011,
+      "peak_rss_mb": 48.4,
+      "peak_rss_source": "harness process",
+      "clean_en_micro_cer": 0.0,
+      "clean_th_micro_cer": 0.06944444444444445,
+      "clean_mixed_micro_cer": 0.018018018018018018,
+      "degraded_micro_cer": null,
+      "low_dpi_micro_cer": null,
+      "born_digital_micro_cer": 0.06944444444444445,
+      "dev_gates_passed": 4,
+      "dev_gates_total": 6
+    }
+  ],
+  "engines": {
+    "tesseract-4.1.1-tessdata-best": {
+      "harness": "ocr-bench-v1",
+      "normalisation": "ocr-bench-norm-v1",
+      "metrics": "ocr-bench-metrics-v1",
+      "documents": [
+        {
+          "id": "en_clean",
+          "pages": [
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 4.59,
+              "page": 1,
+              "lang": "en",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "en"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "en_degraded",
+          "pages": [
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 2.851,
+              "page": 1,
+              "lang": "en",
+              "condition": "degraded"
+            }
+          ],
+          "langs": [
+            "en"
+          ],
+          "condition": "degraded"
+        },
+        {
+          "id": "en_jpeg",
+          "pages": [
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 1.323,
+              "page": 1,
+              "lang": "en",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "en"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "en_tiff",
+          "pages": [
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 1.569,
+              "page": 1,
+              "lang": "en",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "en"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "mixed_clean",
+          "pages": [
+            {
+              "cer": 0.22522522522522523,
+              "cer_nospace": 0.25773195876288657,
+              "wer": 0.3103448275862069,
+              "page_exact": false,
+              "edits": 50,
+              "ref_chars": 222,
+              "hyp_chars": 224,
+              "ref_words": 29,
+              "hyp_sha256": "a34240efea0d76445ab19a08153dcaf6f34b54bb2c059bc014d841b2d61a8cdd",
+              "error": null,
+              "seconds": 4.492,
+              "page": 1,
+              "lang": "mixed",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "mixed"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "mixed_degraded",
+          "pages": [
+            {
+              "cer": 0.18018018018018017,
+              "cer_nospace": 0.20618556701030927,
+              "wer": 0.27586206896551724,
+              "page_exact": false,
+              "edits": 40,
+              "ref_chars": 222,
+              "hyp_chars": 219,
+              "ref_words": 29,
+              "hyp_sha256": "d7335f660ef200ccd2b59d45584026c3bafc6d57f43f4dc18360211f09c4dc4e",
+              "error": null,
+              "seconds": 8.857,
+              "page": 1,
+              "lang": "mixed",
+              "condition": "degraded"
+            }
+          ],
+          "langs": [
+            "mixed"
+          ],
+          "condition": "degraded"
+        },
+        {
+          "id": "mixed_multipage",
+          "pages": [
+            {
+              "cer": 0.05092592592592592,
+              "cer_nospace": 0.031578947368421054,
+              "wer": 0.37037037037037035,
+              "page_exact": false,
+              "edits": 11,
+              "ref_chars": 216,
+              "hyp_chars": 211,
+              "ref_words": 27,
+              "hyp_sha256": "c9e1552577758e75276cd3d9c1a4104c5a1e623a54deeef29122336bbb7f0cd1",
+              "error": null,
+              "seconds": 1.766,
+              "page": 1,
+              "lang": "th",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 2.231,
+              "page": 2,
+              "lang": "en",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.22072072072072071,
+              "cer_nospace": 0.25257731958762886,
+              "wer": 0.3103448275862069,
+              "page_exact": false,
+              "edits": 49,
+              "ref_chars": 222,
+              "hyp_chars": 220,
+              "ref_words": 29,
+              "hyp_sha256": "a2935b29d572df6603539a11c7eaefd071725553145352b50554464c67837587",
+              "error": null,
+              "seconds": 3.247,
+              "page": 3,
+              "lang": "mixed",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.05092592592592592,
+              "cer_nospace": 0.031578947368421054,
+              "wer": 0.37037037037037035,
+              "page_exact": false,
+              "edits": 11,
+              "ref_chars": 216,
+              "hyp_chars": 211,
+              "ref_words": 27,
+              "hyp_sha256": "c9e1552577758e75276cd3d9c1a4104c5a1e623a54deeef29122336bbb7f0cd1",
+              "error": null,
+              "seconds": 1.785,
+              "page": 4,
+              "lang": "th",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 1.567,
+              "page": 5,
+              "lang": "en",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "en",
+            "mixed",
+            "th"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "th_bornpdf",
+          "pages": [
+            {
+              "cer": 0.05092592592592592,
+              "cer_nospace": 0.031578947368421054,
+              "wer": 0.37037037037037035,
+              "page_exact": false,
+              "edits": 11,
+              "ref_chars": 216,
+              "hyp_chars": 211,
+              "ref_words": 27,
+              "hyp_sha256": "c9e1552577758e75276cd3d9c1a4104c5a1e623a54deeef29122336bbb7f0cd1",
+              "error": null,
+              "seconds": 1.435,
+              "page": 1,
+              "lang": "th",
+              "condition": "born_digital"
+            }
+          ],
+          "langs": [
+            "th"
+          ],
+          "condition": "born_digital"
+        },
+        {
+          "id": "th_clean",
+          "pages": [
+            {
+              "cer": 0.1388888888888889,
+              "cer_nospace": 0.11578947368421053,
+              "wer": 0.5555555555555556,
+              "page_exact": false,
+              "edits": 30,
+              "ref_chars": 216,
+              "hyp_chars": 223,
+              "ref_words": 27,
+              "hyp_sha256": "234d30d26998d974561335ed363e48eb08a50253e8728d49632556ce7d8c09d5",
+              "error": null,
+              "seconds": 2.896,
+              "page": 1,
+              "lang": "th",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "th"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "th_degraded",
+          "pages": [
+            {
+              "cer": 0.1388888888888889,
+              "cer_nospace": 0.10526315789473684,
+              "wer": 0.5185185185185185,
+              "page_exact": false,
+              "edits": 30,
+              "ref_chars": 216,
+              "hyp_chars": 227,
+              "ref_words": 27,
+              "hyp_sha256": "ae47d1356e60fd9003686c72073ad7052210f657f65c299102b6f7da9adb2012",
+              "error": null,
+              "seconds": 1.757,
+              "page": 1,
+              "lang": "th",
+              "condition": "degraded"
+            }
+          ],
+          "langs": [
+            "th"
+          ],
+          "condition": "degraded"
+        },
+        {
+          "id": "th_lowdpi",
+          "pages": [
+            {
+              "cer": 0.037037037037037035,
+              "cer_nospace": 0.021052631578947368,
+              "wer": 0.2962962962962963,
+              "page_exact": false,
+              "edits": 8,
+              "ref_chars": 216,
+              "hyp_chars": 211,
+              "ref_words": 27,
+              "hyp_sha256": "604d10c66ecc011e1a874c9ef714c4a4ef7dc3801202dc107f5e4eabc75d83cf",
+              "error": null,
+              "seconds": 1.403,
+              "page": 1,
+              "lang": "th",
+              "condition": "low_dpi"
+            }
+          ],
+          "langs": [
+            "th"
+          ],
+          "condition": "low_dpi"
+        }
+      ],
+      "by_lang": {
+        "en": {
+          "pages": 6,
+          "scored_pages": 6,
+          "failures": 0,
+          "micro_cer": 0.0,
+          "page_exact_rate": 1.0,
+          "seconds_total": 14.131
+        },
+        "mixed": {
+          "pages": 3,
+          "scored_pages": 3,
+          "failures": 0,
+          "micro_cer": 0.2087087087087087,
+          "page_exact_rate": 0.0,
+          "seconds_total": 16.596
+        },
+        "th": {
+          "pages": 6,
+          "scored_pages": 6,
+          "failures": 0,
+          "micro_cer": 0.0779320987654321,
+          "page_exact_rate": 0.0,
+          "seconds_total": 11.042
+        }
+      },
+      "by_condition": {
+        "born_digital": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.05092592592592592,
+          "page_exact_rate": 0.0,
+          "seconds_total": 1.435
+        },
+        "clean": {
+          "pages": 10,
+          "scored_pages": 10,
+          "failures": 0,
+          "micro_cer": 0.07504970178926441,
+          "page_exact_rate": 0.5,
+          "seconds_total": 25.466
+        },
+        "degraded": {
+          "pages": 3,
+          "scored_pages": 3,
+          "failures": 0,
+          "micro_cer": 0.11254019292604502,
+          "page_exact_rate": 0.3333333333333333,
+          "seconds_total": 13.465
+        },
+        "low_dpi": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.037037037037037035,
+          "page_exact_rate": 0.0,
+          "seconds_total": 1.403
+        }
+      },
+      "by_condition_lang": {
+        "born_digital|th": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.05092592592592592,
+          "page_exact_rate": 0.0,
+          "seconds_total": 1.435
+        },
+        "clean|en": {
+          "pages": 5,
+          "scored_pages": 5,
+          "failures": 0,
+          "micro_cer": 0.0,
+          "page_exact_rate": 1.0,
+          "seconds_total": 11.28
+        },
+        "clean|mixed": {
+          "pages": 2,
+          "scored_pages": 2,
+          "failures": 0,
+          "micro_cer": 0.22297297297297297,
+          "page_exact_rate": 0.0,
+          "seconds_total": 7.739
+        },
+        "clean|th": {
+          "pages": 3,
+          "scored_pages": 3,
+          "failures": 0,
+          "micro_cer": 0.08024691358024691,
+          "page_exact_rate": 0.0,
+          "seconds_total": 6.447
+        },
+        "degraded|en": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.0,
+          "page_exact_rate": 1.0,
+          "seconds_total": 2.851
+        },
+        "degraded|mixed": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.18018018018018017,
+          "page_exact_rate": 0.0,
+          "seconds_total": 8.857
+        },
+        "degraded|th": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.1388888888888889,
+          "page_exact_rate": 0.0,
+          "seconds_total": 1.757
+        },
+        "low_dpi|th": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.037037037037037035,
+          "page_exact_rate": 0.0,
+          "seconds_total": 1.403
+        }
+      },
+      "aggregate": {
+        "pages": 15,
+        "scored_pages": 15,
+        "failures": 0,
+        "micro_cer": 0.07827788649706457,
+        "page_exact_rate": 0.4,
+        "seconds_total": 41.769,
+        "seconds_per_page": 2.785,
+        "peak_rss_kb": 79176
+      },
+      "generated_at": "2026-11-08T11:04:09+00:00",
+      "engine": {
+        "name": "tesseract",
+        "version": "tesseract 4.1.1",
+        "lang": "tha+eng",
+        "models": {
+          "tha.traineddata": "ee8adab6dc69eb8df3d3c8307ae8295471b7bd7d86a06d9267aa8f479b064eac",
+          "eng.traineddata": "8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba"
+        }
+      },
+      "corpus": {
+        "id": "ocr-bench-synthetic-v1",
+        "synthetic": true,
+        "license": "CC0-1.0 (text authored for this repository)",
+        "documents": 11,
+        "pages": 15
+      },
+      "rasterisation": {
+        "dpi": 300,
+        "pdf_renderer": "pdftoppm (poppler)"
+      },
+      "hardware": {
+        "cpu": "Intel(R) Core(TM) i5-6300U CPU @ 2.40GHz",
+        "logical_cores": 4,
+        "mem_total_mb": 15374.5,
+        "kernel": "5.14.0-687.64.1.el9_8.x86_64",
+        "python": "3.12.12",
+        "machine": "x86_64"
+      },
+      "dev_gates": {
+        "status": "provisional (proposed, not user-approved; issue #2 B2 open)",
+        "thresholds": {
+          "clean_en_micro_cer_max": 0.05,
+          "clean_th_micro_cer_max": 0.15,
+          "degraded_micro_cer_max": 0.35,
+          "clean_page_exact_rate_min": 0.8,
+          "seconds_per_page_max": 15.0,
+          "peak_rss_mb_max": 1024.0
+        },
+        "checks": [
+          {
+            "gate": "clean_en_micro_cer_max",
+            "value": 0.0,
+            "limit": 0.05,
+            "passed": true
+          },
+          {
+            "gate": "clean_th_micro_cer_max",
+            "value": 0.08024691358024691,
+            "limit": 0.15,
+            "passed": true
+          },
+          {
+            "gate": "degraded_micro_cer_max",
+            "value": 0.11254019292604502,
+            "limit": 0.35,
+            "passed": true
+          },
+          {
+            "gate": "clean_page_exact_rate_min",
+            "value": 0.5,
+            "limit": 0.8,
+            "passed": false
+          },
+          {
+            "gate": "seconds_per_page_max",
+            "value": 2.785,
+            "limit": 15.0,
+            "passed": true
+          },
+          {
+            "gate": "peak_rss_mb_max",
+            "value": 77.3,
+            "limit": 1024.0,
+            "passed": true
+          }
+        ]
+      },
+      "limitations": [
+        "synthetic authored corpus, NOT representative real documents (issue #2 B1 open)",
+        "peak_rss_kb is a running maximum over this process and its children",
+        "no document was uploaded and no paid call was made"
+      ]
+    },
+    "tesseract-4.1.1-distro-langpack": {
+      "harness": "ocr-bench-v1",
+      "normalisation": "ocr-bench-norm-v1",
+      "metrics": "ocr-bench-metrics-v1",
+      "documents": [
+        {
+          "id": "en_clean",
+          "pages": [
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 0.524,
+              "page": 1,
+              "lang": "en",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "en"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "en_degraded",
+          "pages": [
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 0.662,
+              "page": 1,
+              "lang": "en",
+              "condition": "degraded"
+            }
+          ],
+          "langs": [
+            "en"
+          ],
+          "condition": "degraded"
+        },
+        {
+          "id": "en_jpeg",
+          "pages": [
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 0.515,
+              "page": 1,
+              "lang": "en",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "en"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "en_tiff",
+          "pages": [
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 0.491,
+              "page": 1,
+              "lang": "en",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "en"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "mixed_clean",
+          "pages": [
+            {
+              "cer": 0.2072072072072072,
+              "cer_nospace": 0.23711340206185566,
+              "wer": 0.27586206896551724,
+              "page_exact": false,
+              "edits": 46,
+              "ref_chars": 222,
+              "hyp_chars": 222,
+              "ref_words": 29,
+              "hyp_sha256": "d0d5de7a7fc08e9812423a57c83c8894b96f2c2bf4e0ddf9d405802008408a36",
+              "error": null,
+              "seconds": 1.027,
+              "page": 1,
+              "lang": "mixed",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "mixed"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "mixed_degraded",
+          "pages": [
+            {
+              "cer": 0.12162162162162163,
+              "cer_nospace": 0.13917525773195877,
+              "wer": 0.20689655172413793,
+              "page_exact": false,
+              "edits": 27,
+              "ref_chars": 222,
+              "hyp_chars": 219,
+              "ref_words": 29,
+              "hyp_sha256": "1e113263a36f4f57692599fe9039bbd53dc6a061f9bdd29f99fb5b474f84175c",
+              "error": null,
+              "seconds": 2.042,
+              "page": 1,
+              "lang": "mixed",
+              "condition": "degraded"
+            }
+          ],
+          "langs": [
+            "mixed"
+          ],
+          "condition": "degraded"
+        },
+        {
+          "id": "mixed_multipage",
+          "pages": [
+            {
+              "cer": 0.05092592592592592,
+              "cer_nospace": 0.031578947368421054,
+              "wer": 0.37037037037037035,
+              "page_exact": false,
+              "edits": 11,
+              "ref_chars": 216,
+              "hyp_chars": 209,
+              "ref_words": 27,
+              "hyp_sha256": "a66a5e5f36c4bb23115da0f997ca65da493945a5f4be484a2e79c456368d1791",
+              "error": null,
+              "seconds": 0.642,
+              "page": 1,
+              "lang": "th",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 0.563,
+              "page": 2,
+              "lang": "en",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.21621621621621623,
+              "cer_nospace": 0.24742268041237114,
+              "wer": 0.27586206896551724,
+              "page_exact": false,
+              "edits": 48,
+              "ref_chars": 222,
+              "hyp_chars": 212,
+              "ref_words": 29,
+              "hyp_sha256": "876168118a4793c603c26510d382d71cdbbbd6fbe933cf4749e3e4d51d2e2f1a",
+              "error": null,
+              "seconds": 1.067,
+              "page": 3,
+              "lang": "mixed",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.05092592592592592,
+              "cer_nospace": 0.031578947368421054,
+              "wer": 0.37037037037037035,
+              "page_exact": false,
+              "edits": 11,
+              "ref_chars": 216,
+              "hyp_chars": 209,
+              "ref_words": 27,
+              "hyp_sha256": "a66a5e5f36c4bb23115da0f997ca65da493945a5f4be484a2e79c456368d1791",
+              "error": null,
+              "seconds": 0.681,
+              "page": 4,
+              "lang": "th",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 0.554,
+              "page": 5,
+              "lang": "en",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "en",
+            "mixed",
+            "th"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "th_bornpdf",
+          "pages": [
+            {
+              "cer": 0.05092592592592592,
+              "cer_nospace": 0.031578947368421054,
+              "wer": 0.37037037037037035,
+              "page_exact": false,
+              "edits": 11,
+              "ref_chars": 216,
+              "hyp_chars": 209,
+              "ref_words": 27,
+              "hyp_sha256": "a66a5e5f36c4bb23115da0f997ca65da493945a5f4be484a2e79c456368d1791",
+              "error": null,
+              "seconds": 0.923,
+              "page": 1,
+              "lang": "th",
+              "condition": "born_digital"
+            }
+          ],
+          "langs": [
+            "th"
+          ],
+          "condition": "born_digital"
+        },
+        {
+          "id": "th_clean",
+          "pages": [
+            {
+              "cer": 0.14351851851851852,
+              "cer_nospace": 0.12105263157894737,
+              "wer": 0.5555555555555556,
+              "page_exact": false,
+              "edits": 31,
+              "ref_chars": 216,
+              "hyp_chars": 224,
+              "ref_words": 27,
+              "hyp_sha256": "83849613faa89ae11603a60dc92ad9e5a91ff0aebe959c561686dd2134d1e0c3",
+              "error": null,
+              "seconds": 0.787,
+              "page": 1,
+              "lang": "th",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "th"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "th_degraded",
+          "pages": [
+            {
+              "cer": 0.18518518518518517,
+              "cer_nospace": 0.15263157894736842,
+              "wer": 0.5555555555555556,
+              "page_exact": false,
+              "edits": 40,
+              "ref_chars": 216,
+              "hyp_chars": 226,
+              "ref_words": 27,
+              "hyp_sha256": "85bc812b63176cf51c1d1b4fcb92620a6f16f5b10c083e4f0e75808d404eb7e1",
+              "error": null,
+              "seconds": 1.567,
+              "page": 1,
+              "lang": "th",
+              "condition": "degraded"
+            }
+          ],
+          "langs": [
+            "th"
+          ],
+          "condition": "degraded"
+        },
+        {
+          "id": "th_lowdpi",
+          "pages": [
+            {
+              "cer": 0.041666666666666664,
+              "cer_nospace": 0.02631578947368421,
+              "wer": 0.2962962962962963,
+              "page_exact": false,
+              "edits": 9,
+              "ref_chars": 216,
+              "hyp_chars": 212,
+              "ref_words": 27,
+              "hyp_sha256": "0aa717943959bab442645c580cb6fb0fcef4672e7e17a578becac6782367abcf",
+              "error": null,
+              "seconds": 0.51,
+              "page": 1,
+              "lang": "th",
+              "condition": "low_dpi"
+            }
+          ],
+          "langs": [
+            "th"
+          ],
+          "condition": "low_dpi"
+        }
+      ],
+      "by_lang": {
+        "en": {
+          "pages": 6,
+          "scored_pages": 6,
+          "failures": 0,
+          "micro_cer": 0.0,
+          "page_exact_rate": 1.0,
+          "seconds_total": 3.309
+        },
+        "mixed": {
+          "pages": 3,
+          "scored_pages": 3,
+          "failures": 0,
+          "micro_cer": 0.1816816816816817,
+          "page_exact_rate": 0.0,
+          "seconds_total": 4.136
+        },
+        "th": {
+          "pages": 6,
+          "scored_pages": 6,
+          "failures": 0,
+          "micro_cer": 0.08719135802469136,
+          "page_exact_rate": 0.0,
+          "seconds_total": 5.11
+        }
+      },
+      "by_condition": {
+        "born_digital": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.05092592592592592,
+          "page_exact_rate": 0.0,
+          "seconds_total": 0.923
+        },
+        "clean": {
+          "pages": 10,
+          "scored_pages": 10,
+          "failures": 0,
+          "micro_cer": 0.07306163021868788,
+          "page_exact_rate": 0.5,
+          "seconds_total": 6.851
+        },
+        "degraded": {
+          "pages": 3,
+          "scored_pages": 3,
+          "failures": 0,
+          "micro_cer": 0.10771704180064309,
+          "page_exact_rate": 0.3333333333333333,
+          "seconds_total": 4.271
+        },
+        "low_dpi": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.041666666666666664,
+          "page_exact_rate": 0.0,
+          "seconds_total": 0.51
+        }
+      },
+      "by_condition_lang": {
+        "born_digital|th": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.05092592592592592,
+          "page_exact_rate": 0.0,
+          "seconds_total": 0.923
+        },
+        "clean|en": {
+          "pages": 5,
+          "scored_pages": 5,
+          "failures": 0,
+          "micro_cer": 0.0,
+          "page_exact_rate": 1.0,
+          "seconds_total": 2.647
+        },
+        "clean|mixed": {
+          "pages": 2,
+          "scored_pages": 2,
+          "failures": 0,
+          "micro_cer": 0.21171171171171171,
+          "page_exact_rate": 0.0,
+          "seconds_total": 2.094
+        },
+        "clean|th": {
+          "pages": 3,
+          "scored_pages": 3,
+          "failures": 0,
+          "micro_cer": 0.08179012345679013,
+          "page_exact_rate": 0.0,
+          "seconds_total": 2.11
+        },
+        "degraded|en": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.0,
+          "page_exact_rate": 1.0,
+          "seconds_total": 0.662
+        },
+        "degraded|mixed": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.12162162162162163,
+          "page_exact_rate": 0.0,
+          "seconds_total": 2.042
+        },
+        "degraded|th": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.18518518518518517,
+          "page_exact_rate": 0.0,
+          "seconds_total": 1.567
+        },
+        "low_dpi|th": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.041666666666666664,
+          "page_exact_rate": 0.0,
+          "seconds_total": 0.51
+        }
+      },
+      "aggregate": {
+        "pages": 15,
+        "scored_pages": 15,
+        "failures": 0,
+        "micro_cer": 0.07632093933463796,
+        "page_exact_rate": 0.4,
+        "seconds_total": 12.555,
+        "seconds_per_page": 0.837,
+        "peak_rss_kb": 54428
+      },
+      "generated_at": "2026-11-08T11:04:23+00:00",
+      "engine": {
+        "name": "tesseract",
+        "version": "tesseract 4.1.1",
+        "lang": "tha+eng",
+        "models": {
+          "tha.traineddata": "294227cc2d1292b0acb28d61d4115c88252b96d466ca90b417cf4cf0c67bf07c",
+          "eng.traineddata": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
+        }
+      },
+      "corpus": {
+        "id": "ocr-bench-synthetic-v1",
+        "synthetic": true,
+        "license": "CC0-1.0 (text authored for this repository)",
+        "documents": 11,
+        "pages": 15
+      },
+      "rasterisation": {
+        "dpi": 300,
+        "pdf_renderer": "pdftoppm (poppler)"
+      },
+      "hardware": {
+        "cpu": "Intel(R) Core(TM) i5-6300U CPU @ 2.40GHz",
+        "logical_cores": 4,
+        "mem_total_mb": 15374.5,
+        "kernel": "5.14.0-687.64.1.el9_8.x86_64",
+        "python": "3.12.12",
+        "machine": "x86_64"
+      },
+      "dev_gates": {
+        "status": "provisional (proposed, not user-approved; issue #2 B2 open)",
+        "thresholds": {
+          "clean_en_micro_cer_max": 0.05,
+          "clean_th_micro_cer_max": 0.15,
+          "degraded_micro_cer_max": 0.35,
+          "clean_page_exact_rate_min": 0.8,
+          "seconds_per_page_max": 15.0,
+          "peak_rss_mb_max": 1024.0
+        },
+        "checks": [
+          {
+            "gate": "clean_en_micro_cer_max",
+            "value": 0.0,
+            "limit": 0.05,
+            "passed": true
+          },
+          {
+            "gate": "clean_th_micro_cer_max",
+            "value": 0.08179012345679013,
+            "limit": 0.15,
+            "passed": true
+          },
+          {
+            "gate": "degraded_micro_cer_max",
+            "value": 0.10771704180064309,
+            "limit": 0.35,
+            "passed": true
+          },
+          {
+            "gate": "clean_page_exact_rate_min",
+            "value": 0.5,
+            "limit": 0.8,
+            "passed": false
+          },
+          {
+            "gate": "seconds_per_page_max",
+            "value": 0.837,
+            "limit": 15.0,
+            "passed": true
+          },
+          {
+            "gate": "peak_rss_mb_max",
+            "value": 53.2,
+            "limit": 1024.0,
+            "passed": true
+          }
+        ]
+      },
+      "limitations": [
+        "synthetic authored corpus, NOT representative real documents (issue #2 B1 open)",
+        "peak_rss_kb is a running maximum over this process and its children",
+        "no document was uploaded and no paid call was made"
+      ]
+    },
+    "rapidocr-3.10.0-ppocrv5-th": {
+      "harness": "ocr-bench-v1",
+      "normalisation": "ocr-bench-norm-v1",
+      "metrics": "ocr-bench-metrics-v1",
+      "documents": [
+        {
+          "id": "en_clean",
+          "pages": [
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 2.356,
+              "page": 1,
+              "lang": "en",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "en"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "en_degraded",
+          "pages": [
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 2.539,
+              "page": 1,
+              "lang": "en",
+              "condition": "degraded"
+            }
+          ],
+          "langs": [
+            "en"
+          ],
+          "condition": "degraded"
+        },
+        {
+          "id": "en_jpeg",
+          "pages": [
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 2.495,
+              "page": 1,
+              "lang": "en",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "en"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "en_tiff",
+          "pages": [
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 2.533,
+              "page": 1,
+              "lang": "en",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "en"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "mixed_clean",
+          "pages": [
+            {
+              "cer": 0.009009009009009009,
+              "cer_nospace": 0.0,
+              "wer": 0.13793103448275862,
+              "page_exact": false,
+              "edits": 2,
+              "ref_chars": 222,
+              "hyp_chars": 220,
+              "ref_words": 29,
+              "hyp_sha256": "01048551699b9f1b42ae1c2ed1dc64e9953fb08405b7d2604b18c04358232f9e",
+              "error": null,
+              "seconds": 1.905,
+              "page": 1,
+              "lang": "mixed",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "mixed"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "mixed_degraded",
+          "pages": [
+            {
+              "cer": 0.18018018018018017,
+              "cer_nospace": 0.19072164948453607,
+              "wer": 0.27586206896551724,
+              "page_exact": false,
+              "edits": 40,
+              "ref_chars": 222,
+              "hyp_chars": 206,
+              "ref_words": 29,
+              "hyp_sha256": "308096829e7e6a0fb5d3fa46d7f38809464cfab274a7779fff82732544d94235",
+              "error": null,
+              "seconds": 1.78,
+              "page": 1,
+              "lang": "mixed",
+              "condition": "degraded"
+            }
+          ],
+          "langs": [
+            "mixed"
+          ],
+          "condition": "degraded"
+        },
+        {
+          "id": "mixed_multipage",
+          "pages": [
+            {
+              "cer": 0.30092592592592593,
+              "cer_nospace": 0.3157894736842105,
+              "wer": 0.37037037037037035,
+              "page_exact": false,
+              "edits": 65,
+              "ref_chars": 216,
+              "hyp_chars": 176,
+              "ref_words": 27,
+              "hyp_sha256": "787a2901d72a1fa80009bc5921cf92a5883b84f254efc260a183033b84dbe9ff",
+              "error": null,
+              "seconds": 2.041,
+              "page": 1,
+              "lang": "th",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 2.473,
+              "page": 2,
+              "lang": "en",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.009009009009009009,
+              "cer_nospace": 0.0,
+              "wer": 0.10344827586206896,
+              "page_exact": false,
+              "edits": 2,
+              "ref_chars": 222,
+              "hyp_chars": 220,
+              "ref_words": 29,
+              "hyp_sha256": "ce329eba4ee3b8e06f5cadc8f4135a9a16cdb7b71a2cb064181ca0efcefa6123",
+              "error": null,
+              "seconds": 2.198,
+              "page": 3,
+              "lang": "mixed",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.30092592592592593,
+              "cer_nospace": 0.3157894736842105,
+              "wer": 0.37037037037037035,
+              "page_exact": false,
+              "edits": 65,
+              "ref_chars": 216,
+              "hyp_chars": 176,
+              "ref_words": 27,
+              "hyp_sha256": "787a2901d72a1fa80009bc5921cf92a5883b84f254efc260a183033b84dbe9ff",
+              "error": null,
+              "seconds": 2.401,
+              "page": 4,
+              "lang": "th",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 2.559,
+              "page": 5,
+              "lang": "en",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "en",
+            "mixed",
+            "th"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "th_bornpdf",
+          "pages": [
+            {
+              "cer": 0.30092592592592593,
+              "cer_nospace": 0.3157894736842105,
+              "wer": 0.37037037037037035,
+              "page_exact": false,
+              "edits": 65,
+              "ref_chars": 216,
+              "hyp_chars": 176,
+              "ref_words": 27,
+              "hyp_sha256": "787a2901d72a1fa80009bc5921cf92a5883b84f254efc260a183033b84dbe9ff",
+              "error": null,
+              "seconds": 2.063,
+              "page": 1,
+              "lang": "th",
+              "condition": "born_digital"
+            }
+          ],
+          "langs": [
+            "th"
+          ],
+          "condition": "born_digital"
+        },
+        {
+          "id": "th_clean",
+          "pages": [
+            {
+              "cer": 0.18055555555555555,
+              "cer_nospace": 0.1736842105263158,
+              "wer": 0.4444444444444444,
+              "page_exact": false,
+              "edits": 39,
+              "ref_chars": 216,
+              "hyp_chars": 199,
+              "ref_words": 27,
+              "hyp_sha256": "756d02d5bc0daa7bb8de6d73d72a3c63bd0bd5521617dfe9b53d194be32ad4d1",
+              "error": null,
+              "seconds": 2.21,
+              "page": 1,
+              "lang": "th",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "th"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "th_degraded",
+          "pages": [
+            {
+              "cer": 0.18055555555555555,
+              "cer_nospace": 0.18421052631578946,
+              "wer": 0.4444444444444444,
+              "page_exact": false,
+              "edits": 39,
+              "ref_chars": 216,
+              "hyp_chars": 201,
+              "ref_words": 27,
+              "hyp_sha256": "d4947ba0904d86f732d34bef8881314420f5d8b8f35193273f1f29a5145c4fe1",
+              "error": null,
+              "seconds": 2.09,
+              "page": 1,
+              "lang": "th",
+              "condition": "degraded"
+            }
+          ],
+          "langs": [
+            "th"
+          ],
+          "condition": "degraded"
+        },
+        {
+          "id": "th_lowdpi",
+          "pages": [
+            {
+              "cer": 0.2962962962962963,
+              "cer_nospace": 0.3157894736842105,
+              "wer": 0.3333333333333333,
+              "page_exact": false,
+              "edits": 64,
+              "ref_chars": 216,
+              "hyp_chars": 177,
+              "ref_words": 27,
+              "hyp_sha256": "2c06c9c616862169b347be859d58eed74c22f1300fb54e547ff00cb3c61089df",
+              "error": null,
+              "seconds": 1.804,
+              "page": 1,
+              "lang": "th",
+              "condition": "low_dpi"
+            }
+          ],
+          "langs": [
+            "th"
+          ],
+          "condition": "low_dpi"
+        }
+      ],
+      "by_lang": {
+        "en": {
+          "pages": 6,
+          "scored_pages": 6,
+          "failures": 0,
+          "micro_cer": 0.0,
+          "page_exact_rate": 1.0,
+          "seconds_total": 14.955
+        },
+        "mixed": {
+          "pages": 3,
+          "scored_pages": 3,
+          "failures": 0,
+          "micro_cer": 0.06606606606606606,
+          "page_exact_rate": 0.0,
+          "seconds_total": 5.883
+        },
+        "th": {
+          "pages": 6,
+          "scored_pages": 6,
+          "failures": 0,
+          "micro_cer": 0.26003086419753085,
+          "page_exact_rate": 0.0,
+          "seconds_total": 12.609
+        }
+      },
+      "by_condition": {
+        "born_digital": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.30092592592592593,
+          "page_exact_rate": 0.0,
+          "seconds_total": 2.063
+        },
+        "clean": {
+          "pages": 10,
+          "scored_pages": 10,
+          "failures": 0,
+          "micro_cer": 0.08598409542743539,
+          "page_exact_rate": 0.5,
+          "seconds_total": 23.171
+        },
+        "degraded": {
+          "pages": 3,
+          "scored_pages": 3,
+          "failures": 0,
+          "micro_cer": 0.1270096463022508,
+          "page_exact_rate": 0.3333333333333333,
+          "seconds_total": 6.409
+        },
+        "low_dpi": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.2962962962962963,
+          "page_exact_rate": 0.0,
+          "seconds_total": 1.804
+        }
+      },
+      "by_condition_lang": {
+        "born_digital|th": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.30092592592592593,
+          "page_exact_rate": 0.0,
+          "seconds_total": 2.063
+        },
+        "clean|en": {
+          "pages": 5,
+          "scored_pages": 5,
+          "failures": 0,
+          "micro_cer": 0.0,
+          "page_exact_rate": 1.0,
+          "seconds_total": 12.416
+        },
+        "clean|mixed": {
+          "pages": 2,
+          "scored_pages": 2,
+          "failures": 0,
+          "micro_cer": 0.009009009009009009,
+          "page_exact_rate": 0.0,
+          "seconds_total": 4.103
+        },
+        "clean|th": {
+          "pages": 3,
+          "scored_pages": 3,
+          "failures": 0,
+          "micro_cer": 0.26080246913580246,
+          "page_exact_rate": 0.0,
+          "seconds_total": 6.652
+        },
+        "degraded|en": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.0,
+          "page_exact_rate": 1.0,
+          "seconds_total": 2.539
+        },
+        "degraded|mixed": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.18018018018018017,
+          "page_exact_rate": 0.0,
+          "seconds_total": 1.78
+        },
+        "degraded|th": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.18055555555555555,
+          "page_exact_rate": 0.0,
+          "seconds_total": 2.09
+        },
+        "low_dpi|th": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.2962962962962963,
+          "page_exact_rate": 0.0,
+          "seconds_total": 1.804
+        }
+      },
+      "aggregate": {
+        "pages": 15,
+        "scored_pages": 15,
+        "failures": 0,
+        "micro_cer": 0.12426614481409001,
+        "page_exact_rate": 0.4,
+        "seconds_total": 33.447,
+        "seconds_per_page": 2.23,
+        "peak_rss_kb": 49596
+      },
+      "generated_at": "2026-11-08T11:07:20+00:00",
+      "engine": {
+        "name": "rapidocr",
+        "version": "3.10.0",
+        "lang": "tha+eng",
+        "models": {
+          "PP-OCRv6_det_small.onnx": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f",
+          "PP-OCRv6_rec_small.onnx": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+          "ch_ppocr_mobile_v2.0_cls_mobile.onnx": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c",
+          "th_PP-OCRv5_rec_mobile.onnx": "de541dd83161c241ff426f7ecfd602a0ba77d686cf3ab9a6c255ea82fd08006e"
+        },
+        "adapter": {
+          "rec_config": "LangRec.TH / PP-OCRv5 / mobile",
+          "init_seconds": 0.782,
+          "total_seconds": 33.447,
+          "peak_rss_kb": 826488
+        }
+      },
+      "corpus": {
+        "id": "ocr-bench-synthetic-v1",
+        "synthetic": true,
+        "license": "CC0-1.0 (text authored for this repository)",
+        "documents": 11,
+        "pages": 15
+      },
+      "rasterisation": {
+        "dpi": 300,
+        "pdf_renderer": "pdftoppm (poppler)"
+      },
+      "hardware": {
+        "cpu": "Intel(R) Core(TM) i5-6300U CPU @ 2.40GHz",
+        "logical_cores": 4,
+        "mem_total_mb": 15374.5,
+        "kernel": "5.14.0-687.64.1.el9_8.x86_64",
+        "python": "3.12.12",
+        "machine": "x86_64"
+      },
+      "dev_gates": {
+        "status": "provisional (proposed, not user-approved; issue #2 B2 open)",
+        "thresholds": {
+          "clean_en_micro_cer_max": 0.05,
+          "clean_th_micro_cer_max": 0.15,
+          "degraded_micro_cer_max": 0.35,
+          "clean_page_exact_rate_min": 0.8,
+          "seconds_per_page_max": 15.0,
+          "peak_rss_mb_max": 1024.0
+        },
+        "checks": [
+          {
+            "gate": "clean_en_micro_cer_max",
+            "value": 0.0,
+            "limit": 0.05,
+            "passed": true
+          },
+          {
+            "gate": "clean_th_micro_cer_max",
+            "value": 0.26080246913580246,
+            "limit": 0.15,
+            "passed": false
+          },
+          {
+            "gate": "degraded_micro_cer_max",
+            "value": 0.1270096463022508,
+            "limit": 0.35,
+            "passed": true
+          },
+          {
+            "gate": "clean_page_exact_rate_min",
+            "value": 0.5,
+            "limit": 0.8,
+            "passed": false
+          },
+          {
+            "gate": "seconds_per_page_max",
+            "value": 2.23,
+            "limit": 15.0,
+            "passed": true
+          },
+          {
+            "gate": "peak_rss_mb_max",
+            "value": 48.4,
+            "limit": 1024.0,
+            "passed": true
+          }
+        ]
+      },
+      "limitations": [
+        "synthetic authored corpus, NOT representative real documents (issue #2 B1 open)",
+        "peak_rss_kb is a running maximum over this process and its children",
+        "no document was uploaded and no paid call was made"
+      ]
+    },
+    "embedded-pdf-text-layer": {
+      "harness": "ocr-bench-v1",
+      "normalisation": "ocr-bench-norm-v1",
+      "metrics": "ocr-bench-metrics-v1",
+      "documents": [
+        {
+          "id": "mixed_multipage",
+          "pages": [
+            {
+              "cer": 0.06944444444444445,
+              "cer_nospace": 0.031578947368421054,
+              "wer": 0.5185185185185185,
+              "page_exact": false,
+              "edits": 15,
+              "ref_chars": 216,
+              "hyp_chars": 214,
+              "ref_words": 27,
+              "hyp_sha256": "b5a24020a4b29a6a410353fa92ed097799b1ab8c78ae75d2a3950429eeb21746",
+              "error": null,
+              "seconds": 0.011,
+              "page": 1,
+              "lang": "th",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 0.011,
+              "page": 2,
+              "lang": "en",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.018018018018018018,
+              "cer_nospace": 0.010309278350515464,
+              "wer": 0.13793103448275862,
+              "page_exact": false,
+              "edits": 4,
+              "ref_chars": 222,
+              "hyp_chars": 224,
+              "ref_words": 29,
+              "hyp_sha256": "7059105afe35fdc78b002c62dbc60764d1558a581551e2852652567df8e6d396",
+              "error": null,
+              "seconds": 0.011,
+              "page": 3,
+              "lang": "mixed",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.06944444444444445,
+              "cer_nospace": 0.031578947368421054,
+              "wer": 0.5185185185185185,
+              "page_exact": false,
+              "edits": 15,
+              "ref_chars": 216,
+              "hyp_chars": 214,
+              "ref_words": 27,
+              "hyp_sha256": "b5a24020a4b29a6a410353fa92ed097799b1ab8c78ae75d2a3950429eeb21746",
+              "error": null,
+              "seconds": 0.012,
+              "page": 4,
+              "lang": "th",
+              "condition": "clean"
+            },
+            {
+              "cer": 0.0,
+              "cer_nospace": 0.0,
+              "wer": 0.0,
+              "page_exact": true,
+              "edits": 0,
+              "ref_chars": 184,
+              "hyp_chars": 184,
+              "ref_words": 27,
+              "hyp_sha256": "6bca2bd552cd3bf4ed943280393a442d05c5ec9e3f563853745a919d386dfe01",
+              "error": null,
+              "seconds": 0.011,
+              "page": 5,
+              "lang": "en",
+              "condition": "clean"
+            }
+          ],
+          "langs": [
+            "en",
+            "mixed",
+            "th"
+          ],
+          "condition": "clean"
+        },
+        {
+          "id": "th_bornpdf",
+          "pages": [
+            {
+              "cer": 0.06944444444444445,
+              "cer_nospace": 0.031578947368421054,
+              "wer": 0.5185185185185185,
+              "page_exact": false,
+              "edits": 15,
+              "ref_chars": 216,
+              "hyp_chars": 214,
+              "ref_words": 27,
+              "hyp_sha256": "b5a24020a4b29a6a410353fa92ed097799b1ab8c78ae75d2a3950429eeb21746",
+              "error": null,
+              "seconds": 0.012,
+              "page": 1,
+              "lang": "th",
+              "condition": "born_digital"
+            }
+          ],
+          "langs": [
+            "th"
+          ],
+          "condition": "born_digital"
+        }
+      ],
+      "by_lang": {
+        "en": {
+          "pages": 2,
+          "scored_pages": 2,
+          "failures": 0,
+          "micro_cer": 0.0,
+          "page_exact_rate": 1.0,
+          "seconds_total": 0.022
+        },
+        "mixed": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.018018018018018018,
+          "page_exact_rate": 0.0,
+          "seconds_total": 0.011
+        },
+        "th": {
+          "pages": 3,
+          "scored_pages": 3,
+          "failures": 0,
+          "micro_cer": 0.06944444444444445,
+          "page_exact_rate": 0.0,
+          "seconds_total": 0.035
+        }
+      },
+      "by_condition": {
+        "born_digital": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.06944444444444445,
+          "page_exact_rate": 0.0,
+          "seconds_total": 0.012
+        },
+        "clean": {
+          "pages": 5,
+          "scored_pages": 5,
+          "failures": 0,
+          "micro_cer": 0.033268101761252444,
+          "page_exact_rate": 0.4,
+          "seconds_total": 0.056
+        }
+      },
+      "by_condition_lang": {
+        "born_digital|th": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.06944444444444445,
+          "page_exact_rate": 0.0,
+          "seconds_total": 0.012
+        },
+        "clean|en": {
+          "pages": 2,
+          "scored_pages": 2,
+          "failures": 0,
+          "micro_cer": 0.0,
+          "page_exact_rate": 1.0,
+          "seconds_total": 0.022
+        },
+        "clean|mixed": {
+          "pages": 1,
+          "scored_pages": 1,
+          "failures": 0,
+          "micro_cer": 0.018018018018018018,
+          "page_exact_rate": 0.0,
+          "seconds_total": 0.011
+        },
+        "clean|th": {
+          "pages": 2,
+          "scored_pages": 2,
+          "failures": 0,
+          "micro_cer": 0.06944444444444445,
+          "page_exact_rate": 0.0,
+          "seconds_total": 0.023
+        }
+      },
+      "aggregate": {
+        "pages": 6,
+        "scored_pages": 6,
+        "failures": 0,
+        "micro_cer": 0.0395799676898223,
+        "page_exact_rate": 0.3333333333333333,
+        "seconds_total": 0.068,
+        "seconds_per_page": 0.011,
+        "peak_rss_kb": 49584
+      },
+      "generated_at": "2026-11-08T11:04:25+00:00",
+      "engine": {
+        "name": "embedded-pdf-text",
+        "version": "pdftotext version 21.01.0",
+        "lang": "tha+eng",
+        "models": {}
+      },
+      "corpus": {
+        "id": "ocr-bench-synthetic-v1",
+        "synthetic": true,
+        "license": "CC0-1.0 (text authored for this repository)",
+        "documents": 11,
+        "pages": 15
+      },
+      "rasterisation": {
+        "dpi": 300,
+        "pdf_renderer": "pdftoppm (poppler)"
+      },
+      "hardware": {
+        "cpu": "Intel(R) Core(TM) i5-6300U CPU @ 2.40GHz",
+        "logical_cores": 4,
+        "mem_total_mb": 15374.5,
+        "kernel": "5.14.0-687.64.1.el9_8.x86_64",
+        "python": "3.12.12",
+        "machine": "x86_64"
+      },
+      "dev_gates": {
+        "status": "provisional (proposed, not user-approved; issue #2 B2 open)",
+        "thresholds": {
+          "clean_en_micro_cer_max": 0.05,
+          "clean_th_micro_cer_max": 0.15,
+          "degraded_micro_cer_max": 0.35,
+          "clean_page_exact_rate_min": 0.8,
+          "seconds_per_page_max": 15.0,
+          "peak_rss_mb_max": 1024.0
+        },
+        "checks": [
+          {
+            "gate": "clean_en_micro_cer_max",
+            "value": 0.0,
+            "limit": 0.05,
+            "passed": true
+          },
+          {
+            "gate": "clean_th_micro_cer_max",
+            "value": 0.06944444444444445,
+            "limit": 0.15,
+            "passed": true
+          },
+          {
+            "gate": "degraded_micro_cer_max",
+            "value": null,
+            "limit": 0.35,
+            "passed": false
+          },
+          {
+            "gate": "clean_page_exact_rate_min",
+            "value": 0.4,
+            "limit": 0.8,
+            "passed": false
+          },
+          {
+            "gate": "seconds_per_page_max",
+            "value": 0.011,
+            "limit": 15.0,
+            "passed": true
+          },
+          {
+            "gate": "peak_rss_mb_max",
+            "value": 48.4,
+            "limit": 1024.0,
+            "passed": true
+          }
+        ]
+      },
+      "limitations": [
+        "synthetic authored corpus, NOT representative real documents (issue #2 B1 open)",
+        "peak_rss_kb is a running maximum over this process and its children",
+        "no document was uploaded and no paid call was made"
+      ]
+    }
+  }
+}
