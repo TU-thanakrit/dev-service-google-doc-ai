@@ -102,10 +102,17 @@ class FakeOcrEngine:
         self.engine_ref = engine_ref
         self.calls: list[int] = []
 
-    def page_count(self, content: bytes, mime_type: str) -> int:
+    def page_count(self, content: bytes, mime_type: str, *, timeout_s: float | None = None) -> int:
         return len(self._pages)
 
-    def recognize_page(self, content: bytes, mime_type: str, page_number: int) -> EnginePage:
+    def recognize_page(
+        self,
+        content: bytes,
+        mime_type: str,
+        page_number: int,
+        *,
+        timeout_s: float | None = None,
+    ) -> EnginePage:
         self.calls.append(page_number)
         outcome = self._pages[page_number - 1]
         if isinstance(outcome, (list, tuple)):

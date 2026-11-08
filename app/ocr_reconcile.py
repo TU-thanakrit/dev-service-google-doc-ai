@@ -20,6 +20,7 @@ from app.ocr_dispatch import Dispatcher, launch
 from app.ocr_store import (
     DISPATCH_ATTEMPT_CAP,
     FAILED,
+    RECONCILER_FENCE,
     SUCCEEDED,
     DurableOcrStore,
     JobRecord,
@@ -67,7 +68,7 @@ def _reconcile_job(
         # that durably succeeded is still reported rather than discarded (§6.2).
         job.pages = store.read_page_checkpoints(job)
         finalize_deadline(job, now)
-        store.publish(job)
+        store.publish(job, fence=RECONCILER_FENCE)
         return f"finalized:deadline_exceeded:{job.team_id}/{job.job_id}"
     if job.attempts == 0:
         # Crash between materialization and launch, or a lost `202` [D28].
@@ -98,7 +99,7 @@ def _finalize_unavailable(store: DurableOcrStore, job: JobRecord, now) -> None:
     job.reason = "engine_unavailable"
     job.finalized_at = now
     job.expires_at = now + RETENTION
-    store.publish(job)
+    store.publish(job, fence=RECONCILER_FENCE)
 
 
 def main(argv: list[str] | None = None) -> int:

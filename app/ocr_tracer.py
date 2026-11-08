@@ -31,12 +31,14 @@ from app.ocr_store import (
     FAILED,
     MATERIALIZATION_GRACE,
     PARTIALLY_SUCCEEDED,
+    RECONCILER_FENCE,
     SCHEMA_VERSION,
     SUCCEEDED,
     CapacityExceeded,
     Claim,
     DurableOcrStore,
     JobRecord,
+    Lease,
     PageResult,
     PreconditionFailed,
     StorageUnavailable,
@@ -91,6 +93,15 @@ PERMANENT_PAGE_ERROR = "malformed_document"
 # The submission bound's own code, reused on the worker path when the container the
 # byte scan accepted turns out to hold more pages than the deployment admits (§2.3).
 TOO_MANY_PAGES = "too_many_pages"
+# A page abandoned at the deadline still needs an entry, so it carries the
+# deadline's own code from the same closed set (§2.6, D42).
+DEADLINE_PAGE_ERROR = "deadline_exceeded"
+# The only codes a page entry may carry. An engine's code is untrusted input: a
+# value outside this set is published as the safe transient category instead, so
+# the closed vocabulary of §2.7 cannot be widened by an adapter (§2.7, D19).
+PAGE_ERROR_CODES = frozenset(
+    {TRANSIENT_PAGE_ERROR, PERMANENT_PAGE_ERROR, TOO_MANY_PAGES, DEADLINE_PAGE_ERROR}
+)
 PAGE_ERROR_REASON = {
     TRANSIENT_PAGE_ERROR: "engine_unavailable",
     PERMANENT_PAGE_ERROR: "input_unreadable",
@@ -98,9 +109,24 @@ PAGE_ERROR_REASON = {
     # names: an over-limit document is unreadable input, never an engine failure.
     TOO_MANY_PAGES: "input_unreadable",
 }
-# A page abandoned at the deadline still needs an entry, so it carries the
-# deadline's own code from the same closed set (§2.6, D42).
-DEADLINE_PAGE_ERROR = "deadline_exceeded"
+
+
+def safe_error_code(code: str) -> str:
+    """The code if it is in the allowlisted error vocabulary, else `internal_error`.
+
+    `ERROR_MESSAGES` is the closed set of §2.7 and the only source of a body's
+    message, so an unvetted code must not reach a caller or crash the handler.
+    """
+    return code if code in ERROR_MESSAGES else "internal_error"
+
+
+def _page_error_code(code: str | None) -> str:
+    """A page entry's code, mapped onto the closed page vocabulary.
+
+    Neither an engine's own code nor a missing one may introduce a value §2.7
+    does not name, so anything unrecognised becomes `page_engine_error`.
+    """
+    return code if code in PAGE_ERROR_CODES else TRANSIENT_PAGE_ERROR
 
 
 class Clock(Protocol):
@@ -191,10 +217,17 @@ class OcrEngine(Protocol):
 
     engine_ref: str
 
-    def page_count(self, content: bytes, mime_type: str) -> int: ...
+    def page_count(
+        self, content: bytes, mime_type: str, *, timeout_s: float | None = None
+    ) -> int: ...
 
     def recognize_page(
-        self, content: bytes, mime_type: str, page_number: int
+        self,
+        content: bytes,
+        mime_type: str,
+        page_number: int,
+        *,
+        timeout_s: float | None = None,
     ) -> EnginePage: ...
 
 
@@ -226,6 +259,7 @@ class OcrError(Exception):
 def _error(
     status_code: int, code: str, request: Request, headers: dict[str, str] | None = None
 ) -> JSONResponse:
+    code = safe_error_code(code)
     return JSONResponse(
         status_code=status_code,
         headers=headers,
@@ -355,6 +389,7 @@ def _new_job(
     team_id: str,
     key_hash: str,
     mime_type: str,
+    page_count: int | None,
     dispatcher: Dispatcher,
 ) -> JobRecord:
     # The whole pin of §8, copied from the operator's current settings: it is
@@ -369,6 +404,9 @@ def _new_job(
         byte_length=claim.byte_length,
         key_hash=key_hash,
         mime_type=mime_type,
+        # The admission byte scan's known source page count, written once and
+        # never rewritten, so a worker refusal can account for every page.
+        pages_total=page_count,
         engine_ref=pin.engine_ref,
         worker_revision_digest=pin.worker_revision_digest,
         worker_job_name=pin.worker_job_name,
@@ -469,6 +507,7 @@ def _submit(
     content: bytes,
     content_hash: str,
     mime_type: str,
+    page_count: int | None,
     now: datetime,
     limits: AdmissionLimits,
 ) -> tuple[int, JobRecord]:
@@ -501,6 +540,7 @@ def _submit(
                 proposed,
                 content,
                 mime_type,
+                page_count,
                 claim_generation=claim_generation,
                 limits=limits,
                 now=now,
@@ -529,6 +569,7 @@ def _submit(
                 team_id=team_id,
                 key_hash=key_hash,
                 mime_type=mime_type,
+                page_count=page_count,
                 dispatcher=dispatcher,
             )
             _materialize(store, dispatcher, rebuilt, content, limits=limits, now=now)
@@ -548,6 +589,7 @@ def _submit(
             proposed,
             content,
             mime_type,
+            page_count,
             claim_generation=None,
             limits=limits,
             now=now,
@@ -565,6 +607,7 @@ def _accept(
     claim: Claim,
     content: bytes,
     mime_type: str,
+    page_count: int | None,
     claim_generation: int | None,
     limits: AdmissionLimits,
     now: datetime,
@@ -576,7 +619,12 @@ def _accept(
     attempt rather than a half-created job.
     """
     job = _new_job(
-        claim, team_id=team_id, key_hash=key_hash, mime_type=mime_type, dispatcher=dispatcher
+        claim,
+        team_id=team_id,
+        key_hash=key_hash,
+        mime_type=mime_type,
+        page_count=page_count,
+        dispatcher=dispatcher,
     )
     _ensure_admission(store, job, limits, now)
     _, created = store.create_job(job)
@@ -602,19 +650,39 @@ def _is_retryable(code: str) -> bool:
 
 
 def _recognize_page(
-    engine: OcrEngine, job: JobRecord, content: bytes, page_number: int
+    engine: OcrEngine, job: JobRecord, content: bytes, page_number: int, *, timeout_s: float
 ) -> PageResult:
-    """Recognize one page, re-issuing a transient failure up to `PAGE_RETRIES`."""
+    """Recognize one page, re-issuing a transient failure up to `PAGE_RETRIES`.
+
+    `timeout_s` is the client-side bound for the call, derived from the job's
+    deadline and the attempt's live-lease window. A retry re-issues the call at
+    the same bound, so a retry chain cannot outlive the page's window (§5.5, D42).
+    """
     attempts = 0
     while True:
         try:
-            page = engine.recognize_page(content, job.mime_type, page_number)
+            page = engine.recognize_page(
+                content, job.mime_type, page_number, timeout_s=timeout_s
+            )
         except EnginePageError as exc:
             if _is_retryable(exc.code) and attempts < PAGE_RETRIES:
                 attempts += 1
                 continue
-            return _failed_page(page_number, exc.code)
+            return _failed_page(page_number, _page_error_code(exc.code))
         return _page_result(page_number, page)
+
+
+def _attempt_budget(job: JobRecord, lease: Lease | None, now: datetime) -> float | None:
+    """The seconds one page call may take, or `None` when its window has closed.
+
+    The bound is the tighter of the remaining job lifetime and the remaining
+    live-lease window, so a page call can never run past `deadline_at` or past the
+    instant another execution may take the lease over (§5.5, D42).
+    """
+    remaining = (job.deadline_at - now).total_seconds()
+    if lease is not None:
+        remaining = min(remaining, (lease.lease_expires_at - now).total_seconds())
+    return remaining if remaining > 0 else None
 
 
 def _recognize_pages(
@@ -624,12 +692,16 @@ def _recognize_pages(
     job: JobRecord,
     content: bytes,
     total: int,
-) -> list[PageResult]:
+    lease: Lease | None,
+) -> tuple[list[PageResult] | None, Lease | None]:
     """Recognize the pages without a compatible checkpoint, then account for the rest.
 
     A page with a valid checkpoint is reused and never recomputed (D41); a page
-    not reached because the attempt crossed `deadline_at` is reported failed with
-    the deadline's code, so the result still holds one entry per source page (§2.6).
+    not reached because the attempt's window closed is reported failed with the
+    deadline's code, so the result still holds one entry per source page (§2.6).
+    The lease is renewed before every page, which is this worker's heartbeat; a
+    renewal that loses to a takeover returns `(None, None)` and the caller writes
+    nothing further, so a superseded execution cannot publish (§5.3, §5.4).
     """
     pages: list[PageResult] = []
     for page_number in range(1, total + 1):
@@ -637,52 +709,85 @@ def _recognize_pages(
         if checkpoint is not None:
             pages.append(checkpoint)
             continue
-        if clock.now() >= job.deadline_at:
+        now = clock.now()
+        if lease is not None:
+            lease = store.renew_lease(job, lease, now=now)
+            if lease is None:
+                return None, None
+            now = clock.now()
+        budget = _attempt_budget(job, lease, now)
+        if budget is None:
             break
-        page = _recognize_page(engine, job, content, page_number)
-        if clock.now() >= job.deadline_at:
-            # The page call is abandoned at the deadline: it contributes no page
-            # and is not checkpointed (D42).
+        page = _recognize_page(
+            engine, job, content, page_number, timeout_s=budget
+        )
+        if _attempt_budget(job, lease, clock.now()) is None:
+            # The page call was abandoned at its window's end: it contributes no
+            # page and is not checkpointed (D42).
             break
         if page.status == SUCCEEDED:
             store.put_page_checkpoint(job, page, now=clock.now())
         pages.append(page)
     for page_number in range(len(pages) + 1, total + 1):
         pages.append(_failed_page(page_number, DEADLINE_PAGE_ERROR))
-    return pages
+    return pages, lease
 
 
-def _page_count(engine: OcrEngine, content: bytes, job: JobRecord) -> tuple[int | None, str | None]:
+def _page_count(
+    engine: OcrEngine, content: bytes, job: JobRecord, *, timeout_s: float
+) -> tuple[int | None, str | None]:
     """The engine's source-page count, and the closed-set code when it refuses the bytes.
 
     A decoder failure is input, not a program error: it must reach the caller as a
     refusal instead of failing an attempt with a traceback (§9.14). The engine's own
-    page-error code is kept when it reports one (§2.7), and anything else an engine
-    raises is the application's permanent refusal, so an engine that fails outside
-    that vocabulary can neither crash the worker nor escape the page bound.
+    page-error code is kept when it is in §2.7's closed set, and anything else is
+    mapped onto the safe page category, so an engine that fails outside that
+    vocabulary can neither widen it nor crash the worker.
     """
     try:
-        return engine.page_count(content, job.mime_type), None
+        return engine.page_count(content, job.mime_type, timeout_s=timeout_s), None
     except EnginePageError as exc:
-        return None, exc.code
+        return None, _page_error_code(exc.code)
     except Exception:
         return None, PERMANENT_PAGE_ERROR
 
 
-def _finalize_refused_input(
-    job: JobRecord, now: datetime, *, page_count: int | None, error_code: str
-) -> None:
-    """Finalize a document the worker refuses to recognize: no page work at all.
+# A refused document is never enumerated, so the number of page records written
+# for it is bounded by the contract's provisional 500-page ceiling (§10) even if a
+# decoder reports an implausible count. The bound is a record bound, not a claim
+# that the source had this many pages.
+MAX_REFUSED_PAGE_RECORDS = 500
 
-    One failed page is published rather than one entry per source page, because the
-    document is over the configured bound (or undecodable) and recognizing it to
-    enumerate its pages is exactly what must not happen; `error_code` says which
-    bound fired and comes from §2.7's closed set. This is the only place §2.6's
-    per-source-page accounting is not met, and it is stated in
-    `docs/ocr-v1-admission.md`.
+
+def _refused_page_count(job: JobRecord, total: int | None) -> int:
+    """The known source page count for a refused document, or `0` when unknown.
+
+    The engine's decoder is authoritative for a container the byte scan admitted
+    (it sees the page tree an object stream can hide); the admission page count is
+    the fallback when only recognition failed. Unknown stays unknown: no page is
+    invented (§2.6, §9.14).
+    """
+    if total is not None and total >= 1:
+        return min(total, MAX_REFUSED_PAGE_RECORDS)
+    return job.pages_total or 0
+
+
+def _finalize_refused_input(
+    job: JobRecord, now: datetime, *, page_count: int, error_code: str
+) -> None:
+    """Finalize a document the worker refuses to recognize: no recognition at all.
+
+    Every *known* source page is accounted for with a failed entry carrying the
+    refusal's closed-set code, so `page_count` matches the page list and a caller
+    sees one record per source page (§2.6). When the count is unknown — a decoder
+    that cannot read the container and an admission byte scan that saw no page
+    tree — no entry is invented and `page_count` is `0`; the failure is carried by
+    `state`/`reason`.
     """
     job.pages_total = page_count
-    job.pages = [_failed_page(1, error_code)]
+    job.pages = [
+        _failed_page(page_number, error_code) for page_number in range(1, page_count + 1)
+    ]
     job.state = FAILED
     job.reason = PAGE_ERROR_REASON.get(error_code, "input_unreadable")
     job.finalized_at = now
@@ -730,18 +835,22 @@ def run_job(
     team_id: str,
     job_id: str,
     limits: AdmissionLimits | None = None,
+    lease: Lease | None = None,
 ) -> bool:
     """Worker step: recognize the job's unfinished pages and finalize honestly.
 
     Local form of the Cloud Run Job entrypoint. Returns `True` when it published a
     final result, `False` when it wrote nothing: a job that is absent, already
-    final, or has no input, or an attempt that reaches the job at or after
-    `deadline_at` [D30, D42]. Reads the job before writing anything, reuses
-    compatible page checkpoints so only the missing pages are recomputed, and
-    never produces `succeeded` at or after the deadline. The page count is checked
-    against `limits.max_pages` before any page is recognized, and a container the
-    engine cannot decode is refused the same way instead of failing the attempt
-    (issues #10, #7).
+    final, or has no input, an attempt that reaches the job at or after
+    `deadline_at`, or an execution whose lease was taken over [D30, D42].
+
+    `lease` is the execution's claim from `run_worker`: its fence names the result
+    object this attempt publishes (`result.{fence}.json`), and it is renewed before
+    every page and before publication. A renewal that loses to a takeover stops
+    the attempt with no further write, so a superseded execution can neither
+    publish nor overwrite a result. Without a lease (the local fake dispatch path)
+    the reconciler fence is used and no ownership is asserted; the `final.json`
+    arbiter still picks the single authoritative result.
     """
     limits = limits or AdmissionLimits()
     job = store.get_job(team_id, job_id)
@@ -757,8 +866,17 @@ def run_job(
     if content is None:
         return False
 
+    fence = lease.fence if lease is not None else RECONCILER_FENCE
+    if lease is not None:
+        lease = store.renew_lease(job, lease, now=clock.now())
+        if lease is None:
+            return False
+    budget = _attempt_budget(job, lease, clock.now())
+    if budget is None:
+        return False
+
     store.mark_running(job, now=clock.now())
-    total, refusal = _page_count(engine, content, job)
+    total, refusal = _page_count(engine, content, job, timeout_s=budget)
     # `total is None` is the engine's own refusal: `_page_count` returns a code only
     # when it has no count to report.
     if total is None or not 1 <= total <= limits.max_pages:
@@ -766,6 +884,10 @@ def run_job(
         # gate for what those bytes hid (a page tree inside an object stream), and
         # it is also what keeps a container the engine cannot decode from failing
         # an attempt with a traceback (§9.14). No page is recognized either way.
+        if lease is not None:
+            lease = store.renew_lease(job, lease, now=clock.now())
+            if lease is None:
+                return False
         now = clock.now()
         if now >= job.deadline_at:
             # Past the deadline the attempt publishes no readable decision (D42).
@@ -774,21 +896,32 @@ def run_job(
             _finalize_refused_input(
                 job,
                 now,
-                page_count=total,
                 # The engine's own code wins; otherwise the bound that fired does.
-                error_code=refusal or (TOO_MANY_PAGES if total else PERMANENT_PAGE_ERROR),
+                page_count=_refused_page_count(job, total),
+                error_code=_page_error_code(
+                    refusal or (TOO_MANY_PAGES if total else PERMANENT_PAGE_ERROR)
+                ),
             )
-        store.publish(job)
+        store.publish(job, fence=fence)
         return True
     job.pages_total = total
-    job.pages = _recognize_pages(store, engine, clock, job, content, total)
+    pages, lease = _recognize_pages(store, engine, clock, job, content, total, lease)
+    if pages is None:
+        # The lease was taken over: this execution writes nothing further.
+        return False
+    job.pages = pages
 
     now = clock.now()
-    if now >= job.deadline_at:
+    if lease is not None:
+        lease = store.renew_lease(job, lease, now=now)
+        if lease is None:
+            return False
+        now = clock.now()
+    if now >= job.deadline_at or _attempt_budget(job, lease, now) is None:
         finalize_deadline(job, now)
     else:
         _finalize_result(job, now)
-    if store.publish(job) and job.state == SUCCEEDED:
+    if store.publish(job, fence=fence) and job.state == SUCCEEDED:
         # Full success: the input goes at once rather than at expiry (§6.3). Only
         # the `final.json` winner decides, so a losing attempt of a partial job
         # cannot delete the input that partial job keeps until cleanup.
@@ -897,7 +1030,7 @@ def create_ocr_tracer_app(
 
         content = await file.read()
         declared_type = (file.content_type or "").split(";")[0].strip().lower()
-        mime_type = validate_document(content, declared_type, limits)
+        admitted = validate_document(content, declared_type, limits)
 
         status_code, job = _submit(
             store=store,
@@ -906,7 +1039,8 @@ def create_ocr_tracer_app(
             key_hash=_key_hash(team_id, key),
             content=content,
             content_hash=hashlib.sha256(content).hexdigest(),
-            mime_type=mime_type,
+            mime_type=admitted.mime_type,
+            page_count=admitted.page_count,
             now=clock.now(),
             limits=limits,
         )

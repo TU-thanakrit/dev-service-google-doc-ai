@@ -26,6 +26,15 @@ class GcsObjects:
         self._bucket = bucket
 
     def read(self, name: str) -> tuple[bytes, int] | None:
+        """The object's bytes bound to the generation they were read at.
+
+        `download_as_bytes()` alone returns the *current* bytes, which can be a
+        newer generation than the metadata read; a decision made from that pair
+        (a claim's `job_id`, `final.json`'s result name) would be made on
+        mismatched state. The download is therefore conditioned on the generation
+        just read: deleted in between reads as absent, replaced in between is a
+        storage failure rather than a torn pair (contract §5.2).
+        """
         blob = self._bucket.blob(name)
         try:
             blob.reload()
@@ -33,7 +42,22 @@ class GcsObjects:
             return None
         except GoogleAPIError as exc:
             raise StorageUnavailable(name) from exc
-        return blob.download_as_bytes(), int(blob.generation)
+        generation = blob.generation
+        if generation is None:
+            # No generation from the metadata read: the pair cannot be bound.
+            raise StorageUnavailable(name)
+        generation = int(generation)
+        try:
+            payload = blob.download_as_bytes(if_generation_match=generation)
+        except NotFound:
+            # Deleted between the metadata read and the download: absent, not an
+            # error, so every caller's "no object" path handles it.
+            return None
+        except ApiPreconditionFailed as exc:
+            raise StorageUnavailable(name) from exc
+        except GoogleAPIError as exc:
+            raise StorageUnavailable(name) from exc
+        return payload, generation
 
     def list_names(self, prefix: str) -> list[str]:
         try:

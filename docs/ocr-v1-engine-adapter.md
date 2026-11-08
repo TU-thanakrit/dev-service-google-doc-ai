@@ -32,6 +32,12 @@ and is never returned to a caller (D19); it is the adapter's own declared
 identity now, and the worker resolves an accepted job's engine through it
 (issue #11, `docs/ocr-v1-pinning.md`).
 
+**Deployment gate.** `build_engine` refuses to construct the provisional selection
+unless `OCR_ALLOW_PROVISIONAL_ENGINE=true` is set explicitly. The default is
+`false`, and the refusal is a `PinError`, so a worker refuses the job before any
+page work instead of publishing text under an engine nobody approved. Set the flag
+only for an approved DEV environment; it is not a production selection.
+
 ## Per-page recognition
 
 `page_count` decodes the container without recognizing anything; `recognize_page`
@@ -78,8 +84,12 @@ captured bytes; a timeout raises `CommandTimeout` and a spawn failure
 | page render (`pdftoppm`, `convert`) | 120 s |
 | recognition (`tesseract`) | 120 s |
 
-The deadline-scoped page timeout of §5.5/D42 (`min(page_timeout, deadline_at - now)`)
-is **ticket #11's**; these ceilings only stop one hung binary from stalling an attempt.
+These are strict ceilings, and each one is additionally capped by the
+deadline-scoped page budget of §5.5/D42 the caller passes in (issue #11,
+`docs/ocr-v1-dispatch.md`): every command is issued with
+`min(configured_ceiling, timeout_s)`, so a budget can only shorten a ceiling. The
+budget is the tighter of `deadline_at - now` and the attempt's remaining live
+lease window, and the ceilings still stop one hung binary from stalling an attempt.
 
 ## Failure mapping
 
@@ -89,12 +99,15 @@ is **ticket #11's**; these ceilings only stop one hung binary from stalling an a
 | command timeout, spawn failure, `tesseract` non-zero | `page_engine_error` | yes, `PAGE_RETRIES` | `engine_unavailable` |
 
 A container the engine cannot decode at all (`page_count` fails) is refused before
-any page is recognized: the job is finalized `failed` and the one published page
-carries the engine's own closed-set code (`malformed_document`, or `page_engine_error`
-→ `engine_unavailable` when a decode command timed out or could not be spawned). No
-source page is enumerated and none beyond that single refusal is invented (§5.6, §9
-scenario 14); the resulting per-source-page accounting deviation, and the worker's
-own page bound that uses the same refusal, are stated in `docs/ocr-v1-admission.md`.
+any page is recognized: the job is finalized `failed`, and the pages it publishes
+carry the engine's own closed-set code (`malformed_document`, or `page_engine_error`
+→ `engine_unavailable` when a decode command timed out or could not be spawned); a
+code outside that vocabulary is untrusted input and is published as
+`page_engine_error`. No source page is enumerated: the refused document is accounted
+for from the source page count the admission byte scan persisted, and when neither
+the decoder nor that scan can see the page tree the result is `page_count: 0` with
+no entry invented (§5.6, §9 scenario 14). That accounting, and the worker's own page
+bound that uses the same refusal, are stated in `docs/ocr-v1-admission.md`.
 
 ## Container
 
@@ -177,7 +190,14 @@ is tracked.
 
 Per-job engine and worker pinning, the engine registry, and the D43 pre-launch
 template comparison (#11, since merged and stated in `docs/ocr-v1-pinning.md`),
-the deadline-scoped page timeout and lease-heartbeat renewal (#11), submission-time
-structural/encrypted/size validation (#10, since merged into this branch and
-stated in `docs/ocr-v1-admission.md`), and the numeric limits gated by the
-benchmark ([B3]).
+submission-time structural/encrypted/size validation (#10, since merged into this
+branch and stated in `docs/ocr-v1-admission.md`), and the numeric limits gated by
+the benchmark ([B3]).
+
+The deadline-scoped page timeout that also carries the #11 label is implemented
+here, as this adapter's half of it: `page_count` and `recognize_page` take the
+caller's `timeout_s` and every external command is issued with
+`min(configured_ceiling, timeout_s)`, so a page budget can only shorten one of
+this adapter's own ceilings, never lengthen it. The lease heartbeat and the CAS
+read-then-act limit both it and the page budget inherit are stated in
+`docs/ocr-v1-dispatch.md`.

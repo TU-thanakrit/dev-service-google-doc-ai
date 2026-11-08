@@ -193,36 +193,54 @@ class CommandOcrEngine:
 
     # --- OcrEngine seam ------------------------------------------------------
 
-    def page_count(self, content: bytes, mime_type: str) -> int:
+    def page_count(
+        self, content: bytes, mime_type: str, *, timeout_s: float | None = None
+    ) -> int:
         """Source page/frame count, without recognizing anything (§2.6/D24)."""
         if mime_type == PDF:
-            return self._pdf_page_count(content)
+            return self._pdf_page_count(content, timeout_s)
         if mime_type in SINGLE_PAGE_TYPES:
             return 1
         if mime_type == TIFF:
-            return self._tiff_frame_count(content)
+            return self._tiff_frame_count(content, timeout_s)
         raise self._error(0, PERMANENT_ERROR)
 
-    def recognize_page(self, content: bytes, mime_type: str, page_number: int) -> EnginePage:
-        """Recognize one page, preferring a usable embedded PDF text layer (D11)."""
+    def recognize_page(
+        self,
+        content: bytes,
+        mime_type: str,
+        page_number: int,
+        *,
+        timeout_s: float | None = None,
+    ) -> EnginePage:
+        """Recognize one page, preferring a usable embedded PDF text layer (D11).
+
+        `timeout_s` is the caller's bound for this page (the remaining job deadline
+        and live-lease window). Every external command the page issues is capped by
+        it, so one page can never outlive the attempt's window even when a
+        configured ceiling is larger (§5.5, D42).
+        """
         if page_number < 1:
             raise self._error(page_number, PERMANENT_ERROR)
         if mime_type == PDF:
-            return self._pdf_page(content, page_number)
+            return self._pdf_page(content, page_number, timeout_s)
         if mime_type in SINGLE_PAGE_TYPES:
             if page_number != 1:
                 raise self._error(page_number, PERMANENT_ERROR)
-            return self._ocr_file(content, IMAGE_SUFFIX[mime_type], page_number)
+            return self._ocr_file(content, IMAGE_SUFFIX[mime_type], page_number, timeout_s)
         if mime_type == TIFF:
-            return self._tiff_frame(content, page_number)
+            return self._tiff_frame(content, page_number, timeout_s)
         raise self._error(page_number, PERMANENT_ERROR)
 
     # --- containers ----------------------------------------------------------
 
-    def _pdf_page_count(self, content: bytes) -> int:
+    def _pdf_page_count(self, content: bytes, timeout_s: float | None) -> int:
         with self._scratch(content, ".pdf") as path:
             try:
-                result = self._runner.run([self._pdfinfo, str(path)], timeout=self._decode_timeout)
+                result = self._runner.run(
+                    [self._pdfinfo, str(path)],
+                    timeout=self._bounded(self._decode_timeout, timeout_s),
+                )
             except (CommandTimeout, CommandError):
                 raise self._error(0, TRANSIENT_ERROR) from None
         count = _pages_line(result.stdout) if result.returncode == 0 else None
@@ -230,14 +248,14 @@ class CommandOcrEngine:
             raise self._error(0, PERMANENT_ERROR)
         return count
 
-    def _tiff_frame_count(self, content: bytes) -> int:
+    def _tiff_frame_count(self, content: bytes, timeout_s: float | None) -> int:
         with self._scratch(content, ".tiff") as path:
             try:
                 # `identify` prints the format once per frame, so the format ends
                 # in a newline and the first line carries the count.
                 result = self._runner.run(
                     [self._image_identify, "-format", "%n\n", str(path)],
-                    timeout=self._decode_timeout,
+                    timeout=self._bounded(self._decode_timeout, timeout_s),
                 )
             except (CommandTimeout, CommandError):
                 raise self._error(0, TRANSIENT_ERROR) from None
@@ -248,14 +266,18 @@ class CommandOcrEngine:
 
     # --- one page ------------------------------------------------------------
 
-    def _pdf_page(self, content: bytes, page_number: int) -> EnginePage:
+    def _pdf_page(self, content: bytes, page_number: int, timeout_s: float | None) -> EnginePage:
         with self._scratch(content, ".pdf") as path:
-            embedded = self._embedded_text(path, page_number)
+            embedded = self._embedded_text(path, page_number, timeout_s)
             if embedded is not None:
                 return EnginePage(text=embedded, text_source=EMBEDDED)
-            return self._ocr_image(self._render_page(path, page_number), page_number)
+            return self._ocr_image(
+                self._render_page(path, page_number, timeout_s), page_number, timeout_s
+            )
 
-    def _embedded_text(self, path: Path, page_number: int) -> str | None:
+    def _embedded_text(
+        self, path: Path, page_number: int, timeout_s: float | None
+    ) -> str | None:
         """The page's usable text layer, or `None` when the page must be OCR'd.
 
         Every unusable outcome — a non-zero exit, an unreadable layer, a
@@ -273,14 +295,16 @@ class CommandOcrEngine:
             "-",
         ]
         try:
-            result = self._runner.run(argv, timeout=self._decode_timeout)
+            result = self._runner.run(
+                argv, timeout=self._bounded(self._decode_timeout, timeout_s)
+            )
         except (CommandTimeout, CommandError):
             return None
         if result.returncode != 0:
             return None
         return _usable_embedded(result.stdout)
 
-    def _render_page(self, path: Path, page_number: int) -> Path:
+    def _render_page(self, path: Path, page_number: int, timeout_s: float | None) -> Path:
         prefix = path.parent / "page"
         argv = [
             self._pdftoppm,
@@ -295,7 +319,9 @@ class CommandOcrEngine:
             str(prefix),
         ]
         try:
-            result = self._runner.run(argv, timeout=self._render_timeout)
+            result = self._runner.run(
+                argv, timeout=self._bounded(self._render_timeout, timeout_s)
+            )
         except (CommandTimeout, CommandError):
             raise self._error(page_number, TRANSIENT_ERROR) from None
         if result.returncode != 0:
@@ -307,23 +333,29 @@ class CommandOcrEngine:
             raise self._error(page_number, PERMANENT_ERROR)
         return rendered[0]
 
-    def _tiff_frame(self, content: bytes, page_number: int) -> EnginePage:
+    def _tiff_frame(
+        self, content: bytes, page_number: int, timeout_s: float | None
+    ) -> EnginePage:
         with self._scratch(content, ".tiff") as path:
             target = path.parent / "frame.png"
             argv = [self._image_convert, f"{path}[{page_number - 1}]", str(target)]
             try:
-                result = self._runner.run(argv, timeout=self._render_timeout)
+                result = self._runner.run(
+                    argv, timeout=self._bounded(self._render_timeout, timeout_s)
+                )
             except (CommandTimeout, CommandError):
                 raise self._error(page_number, TRANSIENT_ERROR) from None
             if result.returncode != 0 or not target.exists():
                 raise self._error(page_number, PERMANENT_ERROR)
-            return self._ocr_image(target, page_number)
+            return self._ocr_image(target, page_number, timeout_s)
 
-    def _ocr_file(self, content: bytes, suffix: str, page_number: int) -> EnginePage:
+    def _ocr_file(
+        self, content: bytes, suffix: str, page_number: int, timeout_s: float | None
+    ) -> EnginePage:
         with self._scratch(content, suffix) as path:
-            return self._ocr_image(path, page_number)
+            return self._ocr_image(path, page_number, timeout_s)
 
-    def _ocr_image(self, path: Path, page_number: int) -> EnginePage:
+    def _ocr_image(self, path: Path, page_number: int, timeout_s: float | None) -> EnginePage:
         argv = [
             self._tesseract,
             str(path),
@@ -335,7 +367,11 @@ class CommandOcrEngine:
         ]
         env = {"TESSDATA_PREFIX": self._tessdata_prefix} if self._tessdata_prefix else None
         try:
-            result = self._runner.run(argv, timeout=self._ocr_timeout, env=env)
+            result = self._runner.run(
+                argv,
+                timeout=self._bounded(self._ocr_timeout, timeout_s),
+                env=env,
+            )
         except (CommandTimeout, CommandError):
             raise self._error(page_number, TRANSIENT_ERROR) from None
         if result.returncode != 0:
@@ -345,6 +381,15 @@ class CommandOcrEngine:
         return _page_from_text(result.stdout)
 
     # --- helpers -------------------------------------------------------------
+
+    @staticmethod
+    def _bounded(configured: float, timeout_s: float | None) -> float:
+        """The configured strict ceiling, tightened to the caller's page budget.
+
+        A budget is only ever an upper bound: it can shorten a command's timeout,
+        never lengthen it, so the adapter's own strict ceilings still apply.
+        """
+        return configured if timeout_s is None else min(configured, timeout_s)
 
     @contextmanager
     def _scratch(self, content: bytes, suffix: str) -> Iterator[Path]:
@@ -364,6 +409,18 @@ class CommandOcrEngine:
         return EnginePageError(code)
 
 
+class ProvisionalEngineNotApproved(PinError):
+    """The configured engine is the unapproved DEV selection and no opt-in is set.
+
+    The Tesseract `tha`+`eng` adapter is a measured *provisional* selection, not an
+    approved production engine (`docs/ocr-v1-benchmark-report.md` §6). A deployed
+    worker therefore refuses to build it unless the operator explicitly sets
+    `OCR_ALLOW_PROVISIONAL_ENGINE`, and the refusal is a `PinError`: the worker
+    exits non-zero and writes nothing rather than serving text from an engine
+    nobody approved.
+    """
+
+
 def build_engine(settings: OcrServiceSettings) -> CommandOcrEngine:
     """The recognition engine this deployment's `engine_ref` names (issue #7).
 
@@ -372,7 +429,15 @@ def build_engine(settings: OcrServiceSettings) -> CommandOcrEngine:
     worker matches against the job's recorded pin: a deployment whose settings
     resolve to another configuration cannot serve a job pinned to this one, and
     says so instead of publishing text under the wrong pin.
+
+    The provisional DEV selection is refused unless `OCR_ALLOW_PROVISIONAL_ENGINE`
+    is set, so an unapproved engine cannot be deployed by omission.
     """
+    if not settings.allow_provisional_engine:
+        raise ProvisionalEngineNotApproved(
+            "the configured OCR engine is the provisional DEV selection and "
+            "OCR_ALLOW_PROVISIONAL_ENGINE is not set"
+        )
     return CommandOcrEngine(
         SubprocessRunner(),
         engine_ref=settings.resolved_engine_ref(),

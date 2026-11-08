@@ -32,9 +32,17 @@ class FakeBlob:
         if entry is None:
             raise NotFound(self._name)
         self._payload, self.generation = entry
+        if self._bucket.after_reload is not None:
+            self._bucket.after_reload(self._name)
 
-    def download_as_bytes(self):
-        return self._payload
+    def download_as_bytes(self, if_generation_match=None):
+        self._bucket.fail_if_denied(self._name)
+        entry = self._bucket.objects.get(self._name)
+        if entry is None:
+            raise NotFound(self._name)
+        if if_generation_match is not None and entry[1] != if_generation_match:
+            raise ApiPreconditionFailed(self._name)
+        return entry[0]
 
     def upload_from_string(self, payload, if_generation_match=None):
         self._bucket.fail_if_denied(self._name)
@@ -68,6 +76,9 @@ class FakeBucket:
         self.objects = {}
         self._generation = 0
         self.denied = False
+        # A hook the race tests use to change the object between the metadata
+        # read and the download, which is the pair `GcsObjects.read` must bind.
+        self.after_reload = None
 
     def blob(self, name):
         return FakeBlob(self, name)
@@ -131,6 +142,28 @@ def test_replace_and_delete_require_the_generation_read(objects):
 
 def test_missing_object_reads_as_absent(objects):
     assert objects.read("never/written") is None
+
+
+def test_an_object_deleted_between_the_read_and_the_download_is_absent(objects, bucket):
+    objects.create("racing/object", b"payload")
+    # Cleanup can delete the object between the metadata read and the bytes read.
+    bucket.after_reload = lambda name: bucket.objects.pop(name, None)
+
+    assert objects.read("racing/object") is None
+
+
+def test_bytes_are_never_paired_with_a_generation_they_do_not_belong_to(objects, bucket):
+    objects.create("racing/object", b"first")
+
+    def replace(name):
+        bucket.objects[name] = (b"second", bucket.next_generation())
+
+    bucket.after_reload = replace
+
+    # A replaced object must not yield (new bytes, old generation): the pair is
+    # undecidable, so the read fails rather than letting a decision be made on it.
+    with pytest.raises(StorageUnavailable):
+        objects.read("racing/object")
 
 
 def test_list_names_returns_only_the_matching_prefix(objects):

@@ -175,3 +175,32 @@ def test_completeness_and_warning_union_are_checked():
     assert verify_result_body(mutated(completeness="partial"))
     assert verify_result_body(mutated(warnings=["possible_low_quality", "no_text"]))
     assert verify_result_body(mutated(warnings=["no_text", "possible_low_quality", "no_text"]))
+
+
+def test_a_scalar_page_entry_is_reported_instead_of_crashing():
+    # A malformed service body is exactly what the verifier exists to report; it
+    # must not raise while assembling the text/warning expectations.
+    body = mutated(page_count=1)
+    body["pages"] = ["not a page"]
+
+    errors = verify_result_body(body)
+
+    assert any("not a JSON object" in error for error in errors)
+
+
+def test_a_page_missing_its_text_is_reported_instead_of_crashing():
+    body = mutated(page_count=1)
+    body["pages"] = [
+        {
+            "page_number": 1,
+            "status": "succeeded",
+            "text_source": "ocr",
+            "warnings": [],
+            "error_code": None,
+        }
+    ]
+    body.pop("text")
+
+    errors = verify_result_body(body)
+
+    assert any("missing keys" in error for error in errors)

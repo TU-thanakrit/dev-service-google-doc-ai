@@ -146,6 +146,26 @@ def score_page(ref_text: str, hyp_text: str) -> dict:
     }
 
 
+# A benchmark report records a failure as one fixed category. An exception's text
+# may carry a corpus path, an engine argument, or ground-truth text, and the
+# report is content-free by construction, so nothing derived from it is stored.
+_ERROR_CATEGORIES = (
+    (TimeoutError, "engine_timeout"),
+    (subprocess.TimeoutExpired, "engine_timeout"),
+    (FileNotFoundError, "input_missing"),
+    (ValueError, "invalid_input"),
+    (RuntimeError, "engine_failure"),
+)
+
+
+def error_category(error: BaseException) -> str:
+    """The report's fixed category for an engine failure; never the message."""
+    for kind, category in _ERROR_CATEGORIES:
+        if isinstance(error, kind):
+            return category
+    return "internal_error"
+
+
 def _empty_score() -> dict:
     return {
         "cer": None,
@@ -202,7 +222,8 @@ def evaluate(
         except Exception as exc:  # an accounted-for page outcome, never dropped
             elapsed = round(page_timings.get(item.key, clock() - started), 3)
             score = _empty_score()
-            score["error"] = f"{type(exc).__name__}: {exc}"
+            # Fixed category only: the exception's text is never recorded.
+            score["error"] = error_category(exc)
             score["seconds"] = elapsed
         score["page"] = item.ref.page
         score["lang"] = item.ref.lang

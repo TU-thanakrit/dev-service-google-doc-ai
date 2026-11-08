@@ -50,10 +50,23 @@ until a worker publishes.
 - Lease TTL is 5 minutes and dispatch spacing is 5 minutes, with at most 2
   dispatch attempts [D15, D14]; both are benchmark-gated ([B3]) and **not**
   approved numbers.
-- **Shortcut:** heartbeat renewal of a running lease is not implemented. The fake
-  engine finishes inside one TTL, so this is invisible here; a real per-attempt
-  timeout of minutes will need renewal, and that belongs with the real engine and
-  `task_timeout_s` (ticket #11).
+- **Renewal is the worker's heartbeat.** The worker renews its lease with a CAS
+  replace before every page and before publication, keeping `owner` and `fence`.
+  A renewal that gets `412` means another execution has taken the lease over, so
+  the attempt stops and writes nothing: no page, no result, no `final.json`.
+  Renewal generations are therefore not the lease object's creation generation,
+  and release is a conditional delete at a fresh read plus a holder check.
+- **Renewal and takeover are the same conditional replace, and neither is a lock.**
+  Both are read-then-act on `claim.json` alone, so they *detect* a takeover rather
+  than exclude one: inside the read-to-replace window two executions can both
+  believe they hold the lease, which is why §5.3 claims no mutual exclusion. What
+  the fence does guarantee is at most one **authoritative result** — each execution
+  writes its own `result.{fence}.json` and only `final.json` picks the winner —
+  never at-most-once execution.
+- **Publication is fenced.** Each execution publishes `result.{lease.fence}.json`
+  and only `final.json` selects the authoritative one, so a stale execution can
+  never rewrite another execution's result object; the loser's object stays
+  unpublished until cleanup enumerates `result.*`.
 
 ## Reconciliation
 
@@ -71,10 +84,11 @@ applies the first matching row:
 
 `final.json` is the single arbiter, so two reconcilers (or a reconciler and a
 worker) can never produce two authoritative completions. Not implemented and
-named rather than missing: the capacity admission set (§6.4) belongs to a later
-ticket, and reconciliation does not resume page work. Cleanup (§6.3) is now
-`app/ocr_cleanup.py` (issue #9, `docs/ocr-v1-lifecycle.md`), which is the physical
-deleter; reconciliation no longer leaves it implicit.
+named rather than missing: reconciliation does not resume page work. The capacity
+admission set (§6.4) is now added by issue #10 (`docs/ocr-v1-admission.md`).
+Cleanup (§6.3) is now `app/ocr_cleanup.py` (issue #9,
+`docs/ocr-v1-lifecycle.md`), which is the physical deleter; reconciliation no
+longer leaves it implicit.
 
 ## Container command and args
 
@@ -93,9 +107,11 @@ bucket's own project; defaults to `OCR_PROJECT`), `OCR_REGION`,
 `OCR_WORKER_JOB_NAME`, `OCR_WORKER_CONTAINER_NAME`, `OCR_WORKER_REVISION_DIGEST`,
 `OCR_WORKER_ARGS`, `OCR_WORKER_ENV`, `OCR_ENGINE_REF`, `OCR_TASK_TIMEOUT_S`,
 `OCR_TASK_MAX_RETRIES`, `OCR_API_AUDIENCE`, `OCR_TEAMS` (a JSON `email -> team_id`
-map), and for the worker `OCR_JOB_TEAM_ID` / `OCR_JOB_ID` (delivered as dispatch
-overrides). The dispatch override payload carries only container args, env, and
-the timeout: there is no image field, so the versioned job name *is* part of the
+map), and for the worker `OCR_JOB_TEAM_ID` / `OCR_JOB_ID`, which the launch
+injects into the override env from the *accepted job* on every launch (a pinned
+env value for either name is dropped, so a stale pin can never point an execution
+at another job). The dispatch override payload carries only container args, env,
+and the timeout: there is no image field, so the versioned job name *is* part of the
 pin (§8). Those settings now form the operator's pin for **new** jobs, and every
 launch is built from the pin recorded in the job (issue #11,
 `docs/ocr-v1-pinning.md`); the pre-launch template read-and-compare of that pin

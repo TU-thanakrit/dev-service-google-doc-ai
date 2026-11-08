@@ -17,6 +17,7 @@ from app.ocr_store import (
     DISPATCH_ATTEMPT_CAP,
     DISPATCH_SPACING,
     LEASE_TTL,
+    RECONCILER_FENCE,
     CorruptRecord,
     DurableOcrStore,
     JobRecord,
@@ -176,14 +177,14 @@ def test_final_is_the_only_arbiter_and_a_losing_writer_changes_nothing(store):
     job.pages_total = 1
     job.pages = []
 
-    assert store.publish(job) is True
+    assert store.publish(job, fence=RECONCILER_FENCE) is True
 
     loser = make_job()
     loser.state = "failed"
     loser.reason = "engine_failed"
     loser.finalized_at = SUBMITTED_AT + timedelta(minutes=5)
     loser.expires_at = SUBMITTED_AT + timedelta(hours=24, minutes=5)
-    assert store.publish(loser) is False
+    assert store.publish(loser, fence=RECONCILER_FENCE) is False
 
     view = store.get_job(TEAM, "job-0001")
     assert (view.state, view.reason) == ("succeeded", None)
@@ -215,7 +216,7 @@ def test_running_state_is_written_once_and_never_overwrites_a_final_state(store)
     finished.state = "succeeded"
     finished.finalized_at = SUBMITTED_AT
     finished.expires_at = SUBMITTED_AT + timedelta(hours=24)
-    assert store.publish(finished) is True
+    assert store.publish(finished, fence=RECONCILER_FENCE) is True
 
     store.mark_running(make_job(), now=SUBMITTED_AT)
     assert store.get_job(TEAM, job.job_id).state == "succeeded"
@@ -271,6 +272,92 @@ def test_an_expired_lease_is_taken_over_with_a_higher_fence(store):
     store.release_lease(job, first)
     assert store.read_lease(job).owner == "exec-2"
     assert store.live_lease(job, later).owner == "exec-2"
+
+
+def test_a_renewal_extends_the_lease_without_changing_its_fence(store):
+    job = make_job()
+    store.create_job(job)
+    lease = store.acquire_lease(job, owner="exec-1", now=SUBMITTED_AT)
+
+    renewed = store.renew_lease(job, lease, now=SUBMITTED_AT + timedelta(minutes=1))
+
+    assert renewed is not None
+    assert (renewed.fence, renewed.owner) == (lease.fence, lease.owner)
+    assert renewed.generation != lease.generation
+    assert renewed.lease_expires_at > lease.lease_expires_at
+    # The renewal is the object at the new generation: the next CAS uses it.
+    assert store.read_lease(job).generation == renewed.generation
+
+
+def test_a_renewal_after_a_takeover_is_refused(store):
+    job = make_job()
+    store.create_job(job)
+    superseded = store.acquire_lease(job, owner="exec-1", now=SUBMITTED_AT)
+    later = SUBMITTED_AT + LEASE_TTL + timedelta(seconds=1)
+    assert store.acquire_lease(job, owner="exec-2", now=later).fence == 2
+
+    # The superseded holder learns it no longer owns the execution and writes
+    # nothing else; that `None` is the worker's stop rule (contract §5.3).
+    assert store.renew_lease(job, superseded, now=later) is None
+    assert store.read_lease(job).owner == "exec-2"
+
+
+def test_two_executions_publish_fence_unique_results_and_final_names_the_winner(store, objects):
+    job = make_job()
+    store.create_job(job)
+    first = store.acquire_lease(job, owner="exec-1", now=SUBMITTED_AT)
+    later = SUBMITTED_AT + LEASE_TTL + timedelta(seconds=1)
+    second = store.acquire_lease(job, owner="exec-2", now=later)
+
+    job.pages_total = 1
+    job.state = "succeeded"
+    job.finalized_at = SUBMITTED_AT
+    job.expires_at = SUBMITTED_AT + timedelta(hours=24)
+    assert store.publish(job, fence=first.fence) is True
+
+    # The second execution has its own object name, so it never reads or rewrites
+    # the first one's result; it loses `final.json` and changes nothing.
+    job.state = "failed"
+    job.reason = "deadline_exceeded"
+    assert store.publish(job, fence=second.fence) is False
+
+    assert objects.read("jobs/team-a/job-0001/result.1.json") is not None
+    assert objects.read("jobs/team-a/job-0001/result.2.json") is not None
+    final = json.loads(objects.read("jobs/team-a/job-0001/final.json")[0])
+    assert final["fence"] == first.fence
+    assert final["result_object"] == "jobs/team-a/job-0001/result.1.json"
+    assert store.get_job(TEAM, job.job_id).state == "succeeded"
+
+
+def test_a_release_after_renewal_removes_this_holders_lease(store):
+    job = make_job()
+    store.create_job(job)
+    lease = store.acquire_lease(job, owner="exec-1", now=SUBMITTED_AT)
+    renewed = store.renew_lease(job, lease, now=SUBMITTED_AT + timedelta(minutes=1))
+
+    # The heartbeat moved the object past the original generation; the release is
+    # conditional on a fresh read plus the holder's identity, so it still lands.
+    store.release_lease(job, renewed)
+    assert store.read_lease(job) is None
+
+
+def test_the_admission_page_count_is_persisted_with_the_job(objects, store):
+    job = make_job()
+    job.pages_total = 3
+    store.create_job(job)
+    # The `accepted -> running` CAS rewrites the whole document: the count must
+    # round-trip, because a refused container is accounted from it.
+    store.mark_running(job, now=SUBMITTED_AT)
+
+    assert store.get_job_meta(TEAM, "job-0001").pages_total == 3
+
+
+def test_a_job_without_a_known_page_count_stores_null(objects, store):
+    store.create_job(make_job())
+
+    raw, _ = objects.read("jobs/team-a/job-0001/job.json")
+    assert json.loads(raw)["pages_total"] is None
+    assert store.get_job_meta(TEAM, "job-0001").pages_total is None
 
 
 def test_dispatch_attempts_are_counted_capped_and_spaced(store):

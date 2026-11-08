@@ -5,7 +5,10 @@ at the approved seams**; **no cloud behaviour is verified and deployment is stil
 blocked**. This slice implements `docs/ocr-v1-contracts.md` §8, §6.1 step 2,
 §5.5's engine/checkpoint rules, §5.7's `job.json` pin fields, and D16/D18/D19/D43.
 The deadline-scoped page timeout and the lease-heartbeat renewal that also carry
-the #11 label are **not** in it, and neither is issue #5's ID-token verification.
+the #11 label are now implemented (`app/ocr_tracer.run_job`, `app/ocr_store`), with
+the same single-object read-then-act limit as the pin check
+(`docs/ocr-v1-dispatch.md`), and so is issue #5's ID-token verification
+(`app/ocr_auth.py`).
 
 ## What changed
 
@@ -205,6 +208,6 @@ version-qualification check removed): each mutation fails the tests written for 
 - The Cloud Run resource shape, the `run.jobs.get` permission, and the
   read-then-act window are unverified cloud assumptions [B2]; fake-session success
   is not cloud evidence.
-- The deadline-scoped page timeout, the lease-heartbeat renewal, `page_timeout`,
-  and any backoff remain open under the #11 label ([B3]), as does the ID-token
-  verification (#5). Issue #2's B1/B2/B4 evidence blockers stay open.
+- The deployment numbers stay benchmark-gated ([B3]): `page_timeout` as a named
+  numeric limit, and any backoff, are unapproved. Issue #2's B1/B2/B4 evidence
+  blockers stay open.

@@ -29,6 +29,7 @@ from app.ocr_tracer import (
     MappingTeamDirectory,
     Principal,
     create_ocr_tracer_app,
+    run_job,
 )
 from app.ocr_tracer_fakes import (
     FAKE_ENGINE_REF,
@@ -430,6 +431,97 @@ def test_a_stale_lease_holder_does_not_block_the_next_execution_forever():
 
     assert run(tracer, job_id) == 0
     assert tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").status_code == 200
+
+
+# --- Fenced publication and lease renewal (review: protocol finding) -----------
+
+
+def work_under(tracer, job_id, lease):
+    return run_job(
+        store=tracer.store,
+        engine=tracer.engine,
+        clock=tracer.clock,
+        team_id=TEAM,
+        job_id=job_id,
+        lease=lease,
+    )
+
+
+def final_document(tracer, job_id):
+    return json.loads(tracer.objects.read(f"jobs/{TEAM}/{job_id}/final.json")[0])
+
+
+def test_each_execution_publishes_a_result_named_for_its_lease_fence():
+    tracer = build()
+    job_id = submit(tracer).json()["job_id"]
+    job = tracer.store.get_job(TEAM, job_id)
+    lease = tracer.store.acquire_lease(job, owner="executions/exec-1", now=START)
+
+    assert work_under(tracer, job_id, lease) is True
+
+    final = final_document(tracer, job_id)
+    # The published object is this execution's fenced result, never a shared
+    # `result.0.json` another execution could have written first.
+    assert final["fence"] == lease.fence == 1
+    assert final["result_object"] == f"jobs/{TEAM}/{job_id}/result.1.json"
+
+
+def test_a_superseded_execution_writes_nothing_after_a_takeover():
+    tracer = build()
+    job_id = submit(tracer).json()["job_id"]
+    job = tracer.store.get_job(TEAM, job_id)
+    stale = tracer.store.acquire_lease(job, owner="executions/exec-1", now=START)
+    tracer.clock.advance(LEASE_TTL + timedelta(seconds=1))
+    fresh = tracer.store.acquire_lease(job, owner="executions/exec-2", now=tracer.clock.now())
+    assert fresh.fence == stale.fence + 1
+    before = job_objects(tracer, job_id)
+
+    # The superseded execution resumes after the takeover: it must write nothing,
+    # not even a page, and it must not publish or overwrite a result.
+    assert work_under(tracer, job_id, stale) is False
+
+    assert job_objects(tracer, job_id) == before
+    assert tracer.engine.calls == []
+    assert tracer.objects.read(f"jobs/{TEAM}/{job_id}/final.json") is None
+    assert tracer.objects.read(f"jobs/{TEAM}/{job_id}/result.{stale.fence}.json") is None
+
+    # The live execution still finishes the job, under its own fence.
+    assert work_under(tracer, job_id, fresh) is True
+    final = final_document(tracer, job_id)
+    assert (final["fence"], final["result_object"].rsplit("/", 1)[-1]) == (
+        fresh.fence,
+        f"result.{fresh.fence}.json",
+    )
+
+
+def test_page_calls_are_bounded_by_the_deadline_and_the_lease_window():
+    engine = BudgetRecordingEngine(PAGES)
+    tracer = build(engine=engine)
+    job_id = submit(tracer).json()["job_id"]
+    # One minute of job lifetime left; the lease window is the five-minute TTL,
+    # so the deadline is the tighter bound and must be what the page call gets.
+    tracer.clock.advance(JOB_LIFETIME - timedelta(seconds=60))
+
+    assert run(tracer, job_id) == 0
+
+    assert engine.timeouts, "the worker must pass a bound with every page call"
+    assert all(0 < timeout <= 60.0 for timeout in engine.timeouts)
+
+
+class BudgetRecordingEngine(FakeOcrEngine):
+    """The fake engine, recording the client-side bound each call was given."""
+
+    def __init__(self, pages) -> None:
+        super().__init__(pages)
+        self.timeouts: list[float | None] = []
+
+    def page_count(self, content, mime_type, *, timeout_s=None):
+        self.timeouts.append(timeout_s)
+        return super().page_count(content, mime_type)
+
+    def recognize_page(self, content, mime_type, page_number, *, timeout_s=None):
+        self.timeouts.append(timeout_s)
+        return super().recognize_page(content, mime_type, page_number)
 
 
 def test_fake_worker_command_runs_without_cloud_clients():

@@ -190,6 +190,7 @@ def test_access_is_denied_at_expiry_even_when_content_is_already_deleted():
     # A full success already deleted its input; the result object is what a
     # cleanup pass removes next.
     assert tracer.objects.read(input_name(job_id)) is None
+    # The unleased fake dispatch path publishes under the reconciler fence.
     remove_object(tracer, f"jobs/{TEAM}/{job_id}/result.0.json")
     for name in (f"jobs/{TEAM}/{job_id}/job.json", f"jobs/{TEAM}/{job_id}/final.json"):
         assert tracer.objects.read(name) is not None
@@ -455,7 +456,7 @@ def test_a_pass_deletes_content_before_records_at_real_generations():
     assert [name for name, _ in objects.deleted] == [
         f"inputs/{TEAM}/{job_id}",
         f"jobs/{TEAM}/{job_id}/pages/00001.json",
-        f"jobs/{TEAM}/{job_id}/result.0.json",
+        f"jobs/{TEAM}/{job_id}/result.1.json",
         f"jobs/{TEAM}/{job_id}/dispatch.json",
         f"jobs/{TEAM}/{job_id}/final.json",
         f"jobs/{TEAM}/{job_id}/job.json",

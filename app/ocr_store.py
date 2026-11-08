@@ -47,10 +47,12 @@ FAILED = "failed"
 
 FINAL_STATES = (SUCCEEDED, PARTIALLY_SUCCEEDED, FAILED)
 
-# One fence for this slice: leases and their fencing counter belong to the worker
-# ticket. `final.json` create-if-absent is what picks a single result, and the
-# result object is create-once, so a rerun after a crash reuses it.
-RESULT_FENCE = 0
+# The fence of a writer that owns no worker execution (reconciliation and the
+# cleanup of an unreachable job). Every execution publishes under its own lease
+# fence, so its result object name is unique to that execution and is never
+# rewritten by another one (§5.4). A reconciler's result is unpublished unless it
+# wins `final.json`, which is the same arbiter every writer uses.
+RECONCILER_FENCE = 0
 
 # Global capacity is one serialized admission set (contract §6.4/D40): a single
 # object holding every admission, keyed by `job_id`, pruned inside the same CAS
@@ -209,6 +211,14 @@ def _field(document: dict[str, Any], name: str, kind: type) -> Any:
     return value
 
 
+def _optional_int(document: dict[str, Any], name: str) -> int | None:
+    """An optional integer field: absent or `null` is `None`, anything else fails."""
+    value = document.get(name)
+    if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+        raise CorruptRecord(name)
+    return value
+
+
 def _string_tuple(document: dict[str, Any], name: str) -> tuple[str, ...]:
     value = document.get(name)
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
@@ -329,6 +339,10 @@ def _encode_job(job: JobRecord) -> bytes:
             "worker_env": [list(pair) for pair in job.worker_env],
             "task_timeout_s": job.task_timeout_s,
             "task_max_retries": job.task_max_retries,
+            # The admission byte scan's page count when it was known; `null` when
+            # the page tree was invisible to it. Written once with the record so a
+            # refusal can account for the source pages it knows about.
+            "pages_total": job.pages_total,
             "state": job.state,
         }
     ).encode()
@@ -353,6 +367,7 @@ def _decode_job(payload: bytes, name: str) -> JobRecord:
         worker_env=_env_pairs(document, "worker_env"),
         task_timeout_s=_field(document, "task_timeout_s", int),
         task_max_retries=_field(document, "task_max_retries", int),
+        pages_total=_optional_int(document, "pages_total"),
         state=_field(document, "state", str),
     )
 
@@ -780,15 +795,51 @@ class DurableOcrStore:
         except PreconditionFailed:
             return None
 
-    def release_lease(self, job: JobRecord, lease: Lease) -> None:
-        """Conditional delete at the generation read; a lost race is skipped.
+    def renew_lease(
+        self, job: JobRecord, lease: Lease, *, now: datetime, ttl: timedelta = LEASE_TTL
+    ) -> Lease | None:
+        """Extend a held lease at the generation last read (contract §5.3 step 3).
 
-        A `412` means the lease was taken over or already removed, so this holder
-        must stop rather than force the delete (contract §5.3 step 4).
+        The renewal keeps `owner` and `fence`: it is the same execution, not a
+        takeover. A `412` means another execution took the lease over, so this
+        holder no longer owns the job and must stop writing; the caller maps that
+        `None` onto "write nothing and exit non-zero". A missing object is the
+        same conclusion, because its lease was released or removed.
         """
         name = _lease_name(job.team_id, job.job_id)
+        found = self.objects.read(name)
+        if found is None or found[1] != lease.generation:
+            return None
+        held = _decode_lease(found[0], name, found[1])
+        if (held.owner, held.fence) != (lease.owner, lease.fence):
+            return None
+        renewed = replace(held, lease_expires_at=now + ttl, heartbeat_at=now)
         try:
-            self.objects.delete(name, lease.generation)
+            generation = self.objects.replace(name, _encode_lease(renewed), found[1])
+        except PreconditionFailed:
+            return None
+        return replace(renewed, generation=generation)
+
+    def release_lease(self, job: JobRecord, lease: Lease) -> None:
+        """Conditional delete of this execution's own lease, on completion or give-up.
+
+        The delete is conditional on the generation read **now** and on the record
+        still naming this holder (`owner`, `fence`), because a renewal (the
+        worker's heartbeat) legitimately moves the object past the generation this
+        `Lease` was created at. A renamed fence means another execution took the
+        lease over, and a `412` means it moved again: both are skipped, never
+        forced, so a superseded holder cannot delete the live holder's claim
+        (contract §5.3 step 4).
+        """
+        name = _lease_name(job.team_id, job.job_id)
+        found = self.objects.read(name)
+        if found is None:
+            return
+        held = _decode_lease(found[0], name, found[1])
+        if (held.owner, held.fence) != (lease.owner, lease.fence):
+            return
+        try:
+            self.objects.delete(name, found[1])
         except PreconditionFailed:
             pass
 
@@ -1054,8 +1105,15 @@ class DurableOcrStore:
 
     # --- publication ---------------------------------------------------------
 
-    def publish(self, job: JobRecord, fence: int = RESULT_FENCE) -> bool:
-        """Write the result, then `final.json`. True only for the final arbiter."""
+    def publish(self, job: JobRecord, *, fence: int) -> bool:
+        """Write the result, then `final.json`. True only for the final arbiter.
+
+        The result object is named for the writer's fence and created once, so
+        each execution publishes its own object and can never rewrite another
+        execution's result. `final.json` create-if-absent is the only arbiter and
+        names the result object the winner wrote; a loser's object stays
+        unpublished until cleanup enumerates it (§5.4, §6.3).
+        """
         result_name = _result_name(job.team_id, job.job_id, fence)
         try:
             self.objects.create(result_name, _encode_result(job))

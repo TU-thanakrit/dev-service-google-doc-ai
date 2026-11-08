@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from importlib.metadata import version as package_version
 from pathlib import Path
 
-from scripts.ocr_bench import items_from_corpus
+from scripts.ocr_bench import error_category, items_from_corpus
 
 
 def build_engine():
@@ -89,7 +89,8 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # recorded, not hidden; the harness shows the failure
             lines = []
             failures += 1
-            print(f"FAILED {item.key}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            # Fixed category only: an exception's text can carry a corpus path.
+            print(f"FAILED {item.key}: {error_category(exc)}", file=sys.stderr)
         timings[item.key] = round(time.perf_counter() - page_started, 3)
         (text_dir / f"{item.key}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 

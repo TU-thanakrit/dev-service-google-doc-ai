@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from scripts import ocr_bench as ob
 from scripts import ocr_bench_corpus as corpus
 
@@ -82,10 +84,39 @@ def test_evaluate_records_failure_without_dropping_the_page():
     report = ob.evaluate(items, recognize)
     pages = report["documents"][0]["pages"]
     assert [p["page"] for p in pages] == [1, 2]
-    assert pages[1]["error"] == "RuntimeError: boom"
+    assert pages[1]["error"] == "engine_failure"
     assert report["aggregate"]["pages"] == 2
     assert report["aggregate"]["scored_pages"] == 1
     assert report["aggregate"]["failures"] == 1
+
+
+def test_a_recorded_failure_never_carries_the_exception_text_or_a_path():
+    items = [_item(key="d1.p1")]
+
+    def recognize(item):
+        raise FileNotFoundError("/home/danny/private/corpus/d1.png is missing")
+
+    report = ob.evaluate(items, recognize)
+
+    page = report["documents"][0]["pages"][0]
+    assert page["error"] == "input_missing"
+    blob = json.dumps(report, ensure_ascii=False)
+    assert "private/corpus" not in blob
+    assert "is missing" not in blob
+
+
+@pytest.mark.parametrize(
+    "error, category",
+    [
+        (TimeoutError("slow"), "engine_timeout"),
+        (FileNotFoundError("path"), "input_missing"),
+        (ValueError("bad"), "invalid_input"),
+        (RuntimeError("exit 1"), "engine_failure"),
+        (KeyError("other"), "internal_error"),
+    ],
+)
+def test_benchmark_error_categories_are_a_fixed_vocabulary(error, category):
+    assert ob.error_category(error) == category
 
 
 def test_evaluate_report_contains_no_recognised_or_reference_text():
