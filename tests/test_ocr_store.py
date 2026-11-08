@@ -208,7 +208,7 @@ def test_running_state_is_written_once_and_never_overwrites_a_final_state(store)
     job = make_job()
     store.create_job(job)
 
-    store.mark_running(job)
+    store.mark_running(job, now=SUBMITTED_AT)
     assert store.get_job(TEAM, job.job_id).state == "running"
 
     finished = make_job()
@@ -217,7 +217,7 @@ def test_running_state_is_written_once_and_never_overwrites_a_final_state(store)
     finished.expires_at = SUBMITTED_AT + timedelta(hours=24)
     assert store.publish(finished) is True
 
-    store.mark_running(make_job())
+    store.mark_running(make_job(), now=SUBMITTED_AT)
     assert store.get_job(TEAM, job.job_id).state == "succeeded"
 
 
@@ -361,8 +361,8 @@ def test_a_page_checkpoint_is_create_once_and_keeps_the_first_writer(store):
     job = make_job()
     store.create_job(job)
 
-    store.put_page_checkpoint(job, page_checkpoint(text="first writer"))
-    store.put_page_checkpoint(job, page_checkpoint(text="second writer"))
+    store.put_page_checkpoint(job, page_checkpoint(text="first writer"), now=SUBMITTED_AT)
+    store.put_page_checkpoint(job, page_checkpoint(text="second writer"), now=SUBMITTED_AT)
 
     assert store.read_page_checkpoint(job, 1).text == "first writer"
 
@@ -370,7 +370,7 @@ def test_a_page_checkpoint_is_create_once_and_keeps_the_first_writer(store):
 def test_a_checkpoint_pinned_to_another_engine_is_treated_as_absent(objects, store):
     job = make_job()
     store.create_job(job)
-    store.put_page_checkpoint(job, page_checkpoint())
+    store.put_page_checkpoint(job, page_checkpoint(), now=SUBMITTED_AT)
     _, generation = objects.read(page_name())
     # The same page written by a differently pinned engine is not compatible (D16).
     objects.replace(
@@ -414,6 +414,6 @@ def test_an_invalid_checkpoint_is_replaced_only_at_the_generation_read(objects, 
         ).encode(),
     )
 
-    store.put_page_checkpoint(job, page_checkpoint(text="recovered"))
+    store.put_page_checkpoint(job, page_checkpoint(text="recovered"), now=SUBMITTED_AT)
 
     assert store.read_page_checkpoint(job, 1).text == "recovered"

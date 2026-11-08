@@ -3,8 +3,10 @@
 Dev/test only. Runs the submit -> manual dispatch -> poll -> result lifecycle in
 one process against the injected fakes, then the recovery paths added by issue
 #8: a partial page result, a restart that resumes from page checkpoints, and the
-deadline path. Prints each observable step and fails if any cloud client module
-is imported on the way.
+deadline path, and the deadline/expiry/cleanup paths added by issue #9: prompt
+input deletion, access cut off at expiry while records remain, an idempotent
+physical cleanup pass, and the overdue signal. Prints each observable step and
+fails if any cloud client module is imported on the way.
 
     uv run python -m scripts.ocr_tracer_demo
 
@@ -17,9 +19,11 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from app.ocr_cleanup import CLEANUP_TARGET, cleanup, cleanup_guard
 from app.ocr_reconcile import reconcile
 from app.ocr_tracer import (
     JOB_LIFETIME,
+    RETENTION,
     EnginePage,
     EnginePageError,
     MappingTeamDirectory,
@@ -213,6 +217,43 @@ def main() -> int:
     )
     assert late_result.json()["state"] == "failed"
     assert late_result.json()["reason"] == "deadline_exceeded"
+
+    # A full success deletes its input at once, and access ends at expiry whether
+    # or not a cleanup pass has run.
+    retained = build(engine=FakeOcrEngine([EnginePage(text="kept")]))
+    retained_id = submit(retained.client, key="demo-key-ret-1").json()["job_id"]
+    retained.dispatcher.run_pending()
+    input_name = f"inputs/demo-team/{retained_id}"
+    input_gone = retained.store.objects.read(input_name) is None
+    print(f"POST /v1/ocr/jobs (full success)    -> input deleted: {input_gone}")
+    assert retained.store.objects.read(input_name) is None
+    retained.clock.advance(RETENTION)
+    expired = retained.client.get(f"/v1/ocr/jobs/{retained_id}/result")
+    print(f"GET  /v1/ocr/jobs/{{id}}/result      -> {expired.status_code} (at expires_at)")
+    assert expired.status_code == 410
+    job_record = f"jobs/demo-team/{retained_id}/job.json"
+    records_kept = retained.store.objects.read(job_record) is not None
+    print(f"     records still present: job.json={records_kept}")
+
+    guard = cleanup_guard(retained.store.get_job("demo-team", retained_id))
+    retained.clock.advance(guard - retained.clock.now())
+    actions = cleanup(store=retained.store, clock=retained.clock)
+    print(f"     cleanup pass at the guard         -> {actions}")
+    assert actions == [f"cleaned:demo-team/{retained_id}"]
+    gone = retained.client.get(f"/v1/ocr/jobs/{retained_id}")
+    print(f"GET  /v1/ocr/jobs/{{id}}             -> {gone.status_code} (after cleanup)")
+    assert gone.status_code == 404
+    assert cleanup(store=retained.store, clock=retained.clock) == []
+
+    # A pass that finds a job past its cleanup target reports it overdue and then
+    # still deletes it, so the job log carries the missed target as a signal.
+    overdue = build(engine=FakeOcrEngine([EnginePage(text="late")]))
+    overdue_id = submit(overdue.client, key="demo-key-ovd-1").json()["job_id"]
+    overdue.dispatcher.run_pending()
+    overdue.clock.advance(RETENTION + CLEANUP_TARGET)
+    actions = cleanup(store=overdue.store, clock=overdue.clock)
+    print(f"     cleanup pass past the target      -> {actions}")
+    assert actions == [f"overdue:demo-team/{overdue_id}", f"cleaned:demo-team/{overdue_id}"]
 
     imported = sorted(
         name

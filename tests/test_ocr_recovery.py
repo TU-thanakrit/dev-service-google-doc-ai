@@ -252,6 +252,7 @@ def test_a_stale_or_duplicate_worker_cannot_replace_a_page_that_succeeded():
         PageResult(
             page_number=1, status=SUCCEEDED, text_source="ocr", text="earlier", warnings=[]
         ),
+        now=START,
     )
 
     assert run(tracer, job_id) == 0

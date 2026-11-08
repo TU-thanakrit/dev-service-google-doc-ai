@@ -26,6 +26,9 @@ class OcrServiceSettings(BaseSettings):
     engine_ref: str = "fake-ocr-engine:v1"
     task_timeout_s: int = 1800
     request_timeout_s: float = 60.0
+    # The cleanup job's own schedule period, asserted against `task_timeout_s` at
+    # startup (D32). The Cloud Scheduler trigger itself is deployment config.
+    cleanup_schedule_period_s: int = 900
 
     # API role: the ID-token audience and the verified-principal -> team allowlist.
     api_audience: str = ""
