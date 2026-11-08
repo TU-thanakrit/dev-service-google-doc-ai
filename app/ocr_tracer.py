@@ -1,35 +1,42 @@
-"""Dev/test tracer for the approved asynchronous OCR v1 lifecycle (issue #3).
+"""Dev/test tracer for the approved asynchronous OCR v1 lifecycle (issues #3, #4).
 
 Dev/test only. Every collaborator is injected: this app is fake-backed and is
 deliberately not mounted by the production app (`app.main`), so nothing on this
-path constructs a GCP client. The GCS conditional-write protocol in
-`docs/ocr-v1-contracts.md` is unverified and is not emulated here.
+path constructs a GCP client. Persistence goes through the durable store seam in
+`app.ocr_store`; the reviewed protocol's cross-object limits
+(`docs/ocr-v1-contracts.md` §5.2) are stated there and not papered over here.
 """
 
 import hashlib
 import logging
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Protocol
 
 from fastapi import FastAPI, File, Header, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-logger = logging.getLogger(__name__)
+from app.ocr_store import (
+    FAILED,
+    MATERIALIZATION_GRACE,
+    SCHEMA_VERSION,
+    SUCCEEDED,
+    Claim,
+    DurableOcrStore,
+    JobRecord,
+    PageResult,
+    PreconditionFailed,
+    StorageUnavailable,
+)
 
-SCHEMA_VERSION = "ocr.v1"
+logger = logging.getLogger(__name__)
 
 # Spec-confirmed ceilings: 24 h maximum job lifetime, retention ends one day
 # after finalization. Benchmark-gated numbers are deliberately absent here.
 JOB_LIFETIME = timedelta(hours=24)
 RETENTION = timedelta(hours=24)
-
-ACCEPTED = "accepted"
-RUNNING = "running"
-SUCCEEDED = "succeeded"
-FAILED = "failed"
 
 # Allowlisted messages: no path, bucket, job, processor, or token.
 ERROR_MESSAGES = {
@@ -40,6 +47,7 @@ ERROR_MESSAGES = {
     "empty_document": "document is empty",
     "unsupported_media_type": "declared and detected content type do not match a supported type",
     "job_expired": "job record or result has expired",
+    "storage_unavailable": "durable storage is temporarily unavailable",
     "internal_error": "internal error",
 }
 
@@ -55,6 +63,10 @@ CONTAINER_MAGIC = (
     ("image/tiff", b"II*\x00"),
     ("image/tiff", b"MM\x00*"),
 )
+
+# Bounded re-decide on a lost idempotency race (contract §3.4): re-read, decide
+# again. Exhaustion fails closed instead of creating a second job.
+MAX_IDEMPOTENCY_ATTEMPTS = 5
 
 
 class Clock(Protocol):
@@ -112,62 +124,7 @@ class Dispatcher(Protocol):
     engine_ref: str
     worker_revision_digest: str
 
-    def dispatch(self, job: "JobRecord") -> str | None: ...
-
-
-@dataclass(slots=True)
-class PageResult:
-    page_number: int
-    status: str
-    text_source: str
-    text: str | None
-    warnings: list[str]
-    error_code: str | None = None
-
-    def as_body(self) -> dict[str, Any]:
-        return {
-            "page_number": self.page_number,
-            "status": self.status,
-            "text_source": self.text_source,
-            "text": self.text,
-            "warnings": self.warnings,
-            "error_code": self.error_code,
-        }
-
-
-@dataclass(slots=True)
-class JobRecord:
-    """One job's durable state, as `job.json` plus the finalization record."""
-
-    job_id: str
-    team_id: str
-    accepted_at: datetime
-    deadline_at: datetime
-    content_hash: str
-    byte_length: int
-    key_hash: str
-    mime_type: str
-    engine_ref: str
-    worker_revision_digest: str
-    input_content: bytes = field(default=b"", repr=False)
-    state: str = ACCEPTED
-    pages_total: int | None = None
-    pages: list[PageResult] = field(default_factory=list)
-    execution_ref: str | None = None
-    acknowledged: bool = False
-    finalized_at: datetime | None = None
-    expires_at: datetime | None = None
-    reason: str | None = None
-
-
-class OcrStore(Protocol):
-    """Persistence seam. The fake implementation holds object identity, not GCS generations."""
-
-    def save_job(self, job: JobRecord) -> None: ...
-
-    def get_job(self, team_id: str, job_id: str) -> JobRecord | None: ...
-
-    def find_job_by_key(self, team_id: str, key_hash: str) -> JobRecord | None: ...
+    def dispatch(self, job: JobRecord) -> str | None: ...
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -202,9 +159,12 @@ class OcrError(Exception):
         self.code = code
 
 
-def _error(status_code: int, code: str, request: Request) -> JSONResponse:
+def _error(
+    status_code: int, code: str, request: Request, headers: dict[str, str] | None = None
+) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
+        headers=headers,
         content={
             "schema_version": SCHEMA_VERSION,
             "error": {
@@ -223,9 +183,7 @@ def _verified_team(identity: IdentityResolver, request: Request) -> str:
     return team_id
 
 
-def _servable_job(
-    store: OcrStore, team_id: str, job_id: str, now: datetime
-) -> JobRecord:
+def _servable_job(store: DurableOcrStore, team_id: str, job_id: str, now: datetime) -> JobRecord:
     """One expiry rule, applied before any content is read (contract §3.3).
 
     A foreign team's job id is simply absent, so team isolation needs no
@@ -301,6 +259,240 @@ def _result_body(job: JobRecord) -> dict[str, Any]:
     return body
 
 
+def _new_job(
+    claim: Claim,
+    *,
+    team_id: str,
+    key_hash: str,
+    mime_type: str,
+    dispatcher: Dispatcher,
+) -> JobRecord:
+    return JobRecord(
+        job_id=claim.job_id,
+        team_id=team_id,
+        accepted_at=claim.claimed_at,
+        deadline_at=claim.claimed_at + JOB_LIFETIME,
+        content_hash=claim.content_hash,
+        byte_length=claim.byte_length,
+        key_hash=key_hash,
+        mime_type=mime_type,
+        engine_ref=dispatcher.engine_ref,
+        worker_revision_digest=dispatcher.worker_revision_digest,
+    )
+
+
+def _record_dispatch(store: DurableOcrStore, dispatcher: Dispatcher, job: JobRecord) -> None:
+    """Only the creator of the dispatch intent launches the worker (contract §6.1)."""
+    if store.create_dispatch(job) is not None:
+        store.record_dispatch_ack(job, dispatcher.dispatch(job))
+
+
+def _materialize(
+    store: DurableOcrStore, dispatcher: Dispatcher, job: JobRecord, content: bytes
+) -> None:
+    """Ensure the job record, its input, and one dispatch intent exist.
+
+    Every step is create-once, so a retry that repairs a crash materializes
+    nothing new. Returns nothing: a retry that adopted another actor's job id
+    must not compensate for it.
+    """
+    store.create_job(job)
+    store.put_input(job, content)
+    _record_dispatch(store, dispatcher, job)
+
+
+def _compensate(
+    store: DurableOcrStore,
+    team_id: str,
+    key_hash: str,
+    job: JobRecord,
+    claim_generation: int,
+) -> None:
+    """Undo only what this claim creator wrote itself (contract §4 step 5).
+
+    Content first, then records, every step conditional. A step that loses its
+    precondition is skipped, not forced; reconciliation owns the remainder.
+    """
+    for cleanup in (
+        lambda: store.delete_input(job),
+        lambda: store.delete_job(job),
+        lambda: store.delete_claim(team_id, key_hash, claim_generation, job.job_id),
+    ):
+        try:
+            cleanup()
+        except (PreconditionFailed, StorageUnavailable):
+            pass
+
+
+def _submit(
+    *,
+    store: DurableOcrStore,
+    dispatcher: Dispatcher,
+    team_id: str,
+    key_hash: str,
+    content: bytes,
+    content_hash: str,
+    mime_type: str,
+    now: datetime,
+) -> tuple[int, JobRecord]:
+    """Claim, materialize, and record the launch intent (contract §4).
+
+    Returns the HTTP status and the job to render. Same-key decisions follow
+    §3.4: a live record with the same content returns the existing job, different
+    content conflicts, and a record whose job is absent is either a crash-window
+    retry inside `materialization_grace` or a stale record beyond it.
+    """
+    proposed = Claim(
+        job_id=str(uuid.uuid4()),
+        content_hash=content_hash,
+        byte_length=len(content),
+        claimed_at=now,
+    )
+
+    for _ in range(MAX_IDEMPOTENCY_ATTEMPTS):
+        existing = store.claim(team_id, key_hash)
+        if existing is None:
+            try:
+                claim_generation = store.create_claim(team_id, key_hash, proposed)
+            except PreconditionFailed:
+                continue
+            return _accept(
+                store,
+                dispatcher,
+                team_id,
+                key_hash,
+                proposed,
+                content,
+                mime_type,
+                claim_generation=claim_generation,
+            )
+
+        record, generation = existing
+        job = store.get_job(team_id, record.job_id)
+        same_content = record.content_hash == content_hash and record.byte_length == len(content)
+
+        if job is not None and now < _deny_instant(job):
+            if not same_content:
+                raise OcrError(409, "idempotency_conflict")
+            if job.finalized_at is None:
+                # A same-key retry starts no second logical job; it only repairs
+                # a materialization or dispatch intent that a crash lost.
+                _materialize(store, dispatcher, job, content)
+            return 200, store.get_job(team_id, job.job_id) or job
+
+        if job is None and now - record.claimed_at < MATERIALIZATION_GRACE:
+            if not same_content:
+                raise OcrError(409, "idempotency_conflict")
+            # Crash between the claim and `job.json`: materialize at the recorded
+            # job id, so a 200 never names a job that does not exist.
+            rebuilt = _new_job(
+                record,
+                team_id=team_id,
+                key_hash=key_hash,
+                mime_type=mime_type,
+                dispatcher=dispatcher,
+            )
+            _materialize(store, dispatcher, rebuilt, content)
+            return 200, store.get_job(team_id, rebuilt.job_id) or rebuilt
+
+        # Expired, or a stale claim whose job record is gone: replace the record
+        # at the generation read, conditional on it still naming that job.
+        try:
+            store.replace_claim(team_id, key_hash, proposed, generation, record.job_id)
+        except PreconditionFailed:
+            continue
+        return _accept(
+            store,
+            dispatcher,
+            team_id,
+            key_hash,
+            proposed,
+            content,
+            mime_type,
+            claim_generation=None,
+        )
+
+    # Five lost races is not a second job: fail closed (contract §3.4).
+    raise StorageUnavailable("idempotency claim did not settle")
+
+
+def _accept(
+    store: DurableOcrStore,
+    dispatcher: Dispatcher,
+    team_id: str,
+    key_hash: str,
+    claim: Claim,
+    content: bytes,
+    mime_type: str,
+    claim_generation: int | None,
+) -> tuple[int, JobRecord]:
+    """Create a new job for a claim this request owns, or fail closed with 503."""
+    job = _new_job(
+        claim, team_id=team_id, key_hash=key_hash, mime_type=mime_type, dispatcher=dispatcher
+    )
+    _, created = store.create_job(job)
+    try:
+        store.put_input(job, content)
+        _record_dispatch(store, dispatcher, job)
+    except StorageUnavailable:
+        # Remove only a record and objects this request created itself; a record
+        # it replaced is left for the materialization-grace retry to repair.
+        if claim_generation is not None and created:
+            _compensate(store, team_id, key_hash, job, claim_generation)
+        raise
+    return 202, store.get_job(team_id, job.job_id) or job
+
+
+def run_job(
+    *,
+    store: DurableOcrStore,
+    engine: OcrEngine,
+    clock: Clock,
+    team_id: str,
+    job_id: str,
+) -> None:
+    """Worker step: recognize every page of one accepted job.
+
+    Local form of the Cloud Run Job entrypoint. It reads the job before writing
+    anything and writes nothing when the job is absent, already final, or has no
+    input. It never produces `succeeded` at or after `deadline_at` (D42): a
+    worker that reaches the job past the deadline finalizes `deadline_exceeded`
+    without processing it, and one that crosses the deadline while recognizing
+    discards that attempt's pages. Per-page failure and partial finalization stay
+    with ticket #8; reconciliation of an unusable job is ticket #9.
+    """
+    job = store.get_job(team_id, job_id)
+    if job is None or job.finalized_at is not None:
+        return
+
+    now = clock.now()
+    if now >= job.deadline_at:
+        # No page work is allowed at or after the deadline, so nothing is
+        # recognized and the job is finalized as it stands.
+        _finalize_deadline(job, now)
+        store.publish(job)
+        return
+
+    store.mark_running(job)
+    content = store.read_input(team_id, job_id)
+    if content is None:
+        return
+
+    result = engine.recognize(content, job.mime_type)
+    now = clock.now()
+    if now >= job.deadline_at:
+        _finalize_deadline(job, now)
+    else:
+        job.pages_total = len(result.pages)
+        job.pages = [
+            _page_result(number, page) for number, page in enumerate(result.pages, start=1)
+        ]
+        job.state = SUCCEEDED
+        job.finalized_at = now
+        job.expires_at = now + RETENTION
+    store.publish(job)
+
+
 def _finalize_deadline(job: JobRecord, now: datetime) -> None:
     """Finalize a job at or after its deadline; never `succeeded` (D42).
 
@@ -313,58 +505,9 @@ def _finalize_deadline(job: JobRecord, now: datetime) -> None:
     job.expires_at = now + RETENTION
 
 
-def run_job(
-    *,
-    store: OcrStore,
-    engine: OcrEngine,
-    clock: Clock,
-    team_id: str,
-    job_id: str,
-) -> None:
-    """Worker step: recognize every page of one accepted job.
-
-    Local form of the Cloud Run Job entrypoint. It reads the job before writing
-    anything and writes nothing when the job is absent or already final.
-    It never produces `succeeded` at or after `deadline_at` (D42): a worker that
-    reaches the job past the deadline finalizes `deadline_exceeded` without
-    processing it, and one that crosses the deadline while recognizing discards
-    that attempt's pages. Per-page failure and partial finalization stay with
-    ticket #8: the contract fixes no `reason` for them, so this tracer does not
-    invent one.
-    """
-    job = store.get_job(team_id, job_id)
-    if job is None or job.finalized_at is not None:
-        return
-
-    now = clock.now()
-    if now >= job.deadline_at:
-        # No page work is allowed at or after the deadline, so nothing is
-        # recognized and the job is finalized as it stands.
-        _finalize_deadline(job, now)
-        store.save_job(job)
-        return
-
-    job.state = RUNNING
-    store.save_job(job)
-
-    result = engine.recognize(job.input_content, job.mime_type)
-    now = clock.now()
-    if now >= job.deadline_at:
-        _finalize_deadline(job, now)
-    else:
-        job.pages_total = len(result.pages)
-        job.pages = [
-            _page_result(number, page) for number, page in enumerate(result.pages, start=1)
-        ]
-        job.state = SUCCEEDED
-        job.finalized_at = now
-        job.expires_at = now + RETENTION
-    store.save_job(job)
-
-
 def create_ocr_tracer_app(
     *,
-    store: OcrStore,
+    store: DurableOcrStore,
     dispatcher: Dispatcher,
     clock: Clock,
     identity: IdentityResolver,
@@ -379,6 +522,20 @@ def create_ocr_tracer_app(
     @app.exception_handler(OcrError)
     async def handle_ocr_error(request: Request, exc: OcrError) -> JSONResponse:
         return _error(exc.status_code, exc.code, request)
+
+    @app.exception_handler(StorageUnavailable)
+    async def handle_storage_unavailable(
+        request: Request, exc: StorageUnavailable
+    ) -> JSONResponse:
+        # Fail closed: a record or job read that cannot be decided must never
+        # create a second job (contract §3.4).
+        logger.error(
+            "ocr_tracer storage unavailable error_code=%s request_id=%s job_id=%s",
+            "storage_unavailable",
+            request.headers.get("X-Request-Id"),
+            request.path_params.get("job_id"),
+        )
+        return _error(503, "storage_unavailable", request, headers={"Retry-After": "5"})
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
@@ -415,49 +572,26 @@ def create_ocr_tracer_app(
         if _sniff_container(content) != declared_type:
             raise OcrError(415, "unsupported_media_type")
 
-        now = clock.now()
-        content_hash = hashlib.sha256(content).hexdigest()
-        key_hash = _key_hash(team_id, key)
-
-        existing = store.find_job_by_key(team_id, key_hash)
-        if existing is not None and now < _deny_instant(existing):
-            if existing.content_hash != content_hash or existing.byte_length != len(content):
-                raise OcrError(409, "idempotency_conflict")
-            # Live retry: it is the same logical job, so the caller gets the
-            # stored status and no second dispatch is started (contract §9.1).
-            return JSONResponse(status_code=200, content=_status_body(existing))
-
-        accepted_at = now
-        job = JobRecord(
-            job_id=str(uuid.uuid4()),
+        status_code, job = _submit(
+            store=store,
+            dispatcher=dispatcher,
             team_id=team_id,
-            accepted_at=accepted_at,
-            deadline_at=accepted_at + JOB_LIFETIME,
-            content_hash=content_hash,
-            byte_length=len(content),
-            key_hash=key_hash,
+            key_hash=_key_hash(team_id, key),
+            content=content,
+            content_hash=hashlib.sha256(content).hexdigest(),
             mime_type=declared_type,
-            engine_ref=dispatcher.engine_ref,
-            worker_revision_digest=dispatcher.worker_revision_digest,
-            input_content=content,
+            now=clock.now(),
         )
-        store.save_job(job)
-        job.execution_ref = dispatcher.dispatch(job)
-        job.acknowledged = job.execution_ref is not None
-        return JSONResponse(status_code=202, content=_status_body(job))
+        return JSONResponse(status_code=status_code, content=_status_body(job))
 
     @app.get("/v1/ocr/jobs/{job_id}")
     def get_job(job_id: str, request: Request) -> JSONResponse:
-        job = _servable_job(
-            store, _verified_team(identity, request), job_id, clock.now()
-        )
+        job = _servable_job(store, _verified_team(identity, request), job_id, clock.now())
         return JSONResponse(status_code=200, content=_status_body(job))
 
     @app.get("/v1/ocr/jobs/{job_id}/result")
     def get_result(job_id: str, request: Request) -> JSONResponse:
-        job = _servable_job(
-            store, _verified_team(identity, request), job_id, clock.now()
-        )
+        job = _servable_job(store, _verified_team(identity, request), job_id, clock.now())
         if job.finalized_at is None:
             return JSONResponse(
                 status_code=202,

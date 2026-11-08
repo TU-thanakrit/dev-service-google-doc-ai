@@ -13,18 +13,22 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.ocr_store import MATERIALIZATION_GRACE, StorageUnavailable
 from app.ocr_tracer import (
     JOB_LIFETIME,
     SCHEMA_VERSION,
     EnginePage,
     EngineResult,
     create_ocr_tracer_app,
+    run_job,
 )
 from app.ocr_tracer_fakes import (
     ControllableDispatcher,
     FakeOcrEngine,
+    InMemoryObjectStore,
     InMemoryOcrStore,
     StaticIdentity,
 )
@@ -86,10 +90,11 @@ def build_tracer(
     team_id: str | None = TEAM_ID,
     engine=None,
     store=None,
+    objects=None,
     identity=None,
     acknowledge=True,
 ):
-    store = store or InMemoryOcrStore()
+    store = store or InMemoryOcrStore(objects)
     engine = engine or FakeOcrEngine(pages)
     clock = FakeClock(START)
     dispatcher = ControllableDispatcher(
@@ -592,3 +597,284 @@ def test_fake_mode_command_runs_the_lifecycle_without_cloud_clients():
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "lifecycle ok" in result.stdout
+
+
+# --- Durable submission and idempotency (issue #4) --------------------------------
+#
+# These exercise the durable store seam through the public HTTP lifecycle: the
+# object backend outlives the app, so a "restart" is a second app over the same
+# objects. The fake object store emulates generations and 412s; real GCS
+# concurrency remains unverified (docs/ocr-v1-contracts.md, B1).
+
+
+def job_object(job_id, leaf=""):
+    return f"jobs/{TEAM_ID}/{job_id}" + (f"/{leaf}" if leaf else "")
+
+
+def remove_object(objects, name):
+    found = objects.read(name)
+    assert found is not None, name
+    objects.delete(name, found[1])
+
+
+class RendezvousObjects(InMemoryObjectStore):
+    """Hold the first two claim reads until both submitters have read them."""
+
+    def __init__(self):
+        super().__init__()
+        self._barrier = threading.Barrier(2)
+        self._claim_reads = 0
+
+    def read(self, name):
+        if name.startswith("idem/") and self._claim_reads < 2:
+            self._claim_reads += 1
+            self._barrier.wait(timeout=5)
+        return super().read(name)
+
+
+class UnavailableObjects(InMemoryObjectStore):
+    """Every object operation fails, the way an unreachable backend would."""
+
+    def read(self, name):
+        raise StorageUnavailable(name)
+
+    def create(self, name, payload):
+        raise StorageUnavailable(name)
+
+
+class FailingInputObjects(InMemoryObjectStore):
+    def __init__(self):
+        super().__init__()
+        self.fail_inputs = True
+
+    def create(self, name, payload):
+        if self.fail_inputs and name.startswith("inputs/"):
+            raise StorageUnavailable(name)
+        return super().create(name, payload)
+
+
+class FailingFinalObjects(InMemoryObjectStore):
+    def __init__(self):
+        super().__init__()
+        self.fail_final = False
+
+    def create(self, name, payload):
+        if self.fail_final and name.endswith("final.json"):
+            raise StorageUnavailable(name)
+        return super().create(name, payload)
+
+
+def test_simultaneous_same_key_submissions_create_exactly_one_job():
+    objects = RendezvousObjects()
+    first = build_tracer(objects=objects)
+    second = build_tracer(objects=objects)
+    responses = {}
+
+    def submit_with(name, tracer):
+        responses[name] = submit(tracer)
+
+    workers = [
+        threading.Thread(target=submit_with, args=(name, tracer))
+        for name, tracer in (("first", first), ("second", second))
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=10)
+
+    assert sorted(response.status_code for response in responses.values()) == [200, 202]
+    job_ids = {response.json()["job_id"] for response in responses.values()}
+    assert len(job_ids) == 1
+    job_id = job_ids.pop()
+
+    job_objects = [name for name in objects.names() if name.startswith(f"jobs/{TEAM_ID}/")]
+    claims = [name for name in objects.names() if name.startswith(f"idem/{TEAM_ID}/")]
+    assert job_objects == [
+        f"jobs/{TEAM_ID}/{job_id}/dispatch.json",
+        f"jobs/{TEAM_ID}/{job_id}/job.json",
+    ]
+    assert len(claims) == 1
+    # Only the owner of the dispatch intent may launch the worker.
+    assert len(first.dispatcher.pending) + len(second.dispatcher.pending) == 1
+    assert first.engine.calls == [] and second.engine.calls == []
+
+
+def test_same_key_different_content_conflicts_after_a_restart():
+    objects = InMemoryObjectStore()
+    first = build_tracer(objects=objects)
+    job_id = submit(first).json()["job_id"]
+
+    restarted = build_tracer(objects=objects)
+    conflict = submit(restarted, content=PDF_BYTES + b"% a different document\n")
+
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "idempotency_conflict"
+    assert restarted.client.get(f"/v1/ocr/jobs/{job_id}").json()["state"] == "accepted"
+
+
+def test_unfinished_job_survives_an_api_restart_and_finishes_from_stored_input():
+    objects = InMemoryObjectStore()
+    job_id = submit(build_tracer(objects=objects)).json()["job_id"]
+
+    restarted = build_tracer(objects=objects)
+    assert restarted.client.get(f"/v1/ocr/jobs/{job_id}").json()["state"] == "accepted"
+
+    run_job(
+        store=restarted.store,
+        engine=restarted.engine,
+        clock=restarted.clock,
+        team_id=TEAM_ID,
+        job_id=job_id,
+    )
+
+    result = restarted.client.get(f"/v1/ocr/jobs/{job_id}/result")
+    assert result.status_code == 200
+    assert result.json()["text"] == "หน้าแรก\npage two"
+    assert restarted.engine.calls == [(PDF_BYTES, "application/pdf")]
+
+
+def test_retry_after_restart_reuses_the_job_without_a_second_dispatch():
+    objects = InMemoryObjectStore()
+    first = build_tracer(objects=objects)
+    submitted = submit(first)
+
+    restarted = build_tracer(objects=objects)
+    duplicate = submit(restarted)
+
+    assert duplicate.status_code == 200
+    assert duplicate.json()["job_id"] == submitted.json()["job_id"]
+    assert restarted.dispatcher.pending == []
+
+
+def test_claim_without_a_job_record_is_repaired_within_the_materialization_grace():
+    objects = InMemoryObjectStore()
+    tracer = build_tracer(objects=objects)
+    job_id = submit(tracer).json()["job_id"]
+    # Crash between the claim and `job.json`: nothing else exists yet.
+    for leaf in ("job.json", "dispatch.json"):
+        remove_object(objects, job_object(job_id, leaf))
+    remove_object(objects, f"inputs/{TEAM_ID}/{job_id}")
+
+    retried = submit(tracer)
+
+    assert retried.status_code == 200
+    assert retried.json()["job_id"] == job_id
+    assert objects.read(job_object(job_id, "job.json")) is not None
+    assert objects.read(f"inputs/{TEAM_ID}/{job_id}") is not None
+    tracer.dispatcher.run_pending()
+    assert tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").status_code == 200
+
+
+def test_stale_claim_past_the_grace_is_replaced_instead_of_resurrected():
+    objects = InMemoryObjectStore()
+    tracer = build_tracer(objects=objects)
+    job_id = submit(tracer).json()["job_id"]
+    for leaf in ("job.json", "dispatch.json"):
+        remove_object(objects, job_object(job_id, leaf))
+    remove_object(objects, f"inputs/{TEAM_ID}/{job_id}")
+
+    tracer.clock.advance(MATERIALIZATION_GRACE + timedelta(seconds=1))
+    replaced = submit(tracer)
+
+    assert replaced.status_code == 202
+    new_job_id = replaced.json()["job_id"]
+    assert new_job_id != job_id
+    assert tracer.client.get(f"/v1/ocr/jobs/{job_id}").status_code == 404
+    assert not [name for name in objects.names() if name.startswith(job_object(job_id))]
+
+    # The record now names the new job: the old key dedupes to it, not the old one.
+    assert submit(tracer).json()["job_id"] == new_job_id
+
+
+def test_lost_dispatch_intent_is_repaired_by_a_same_key_retry():
+    objects = InMemoryObjectStore()
+    first = build_tracer(objects=objects)
+    job_id = submit(first).json()["job_id"]
+    remove_object(objects, job_object(job_id, "dispatch.json"))
+
+    retried = build_tracer(objects=objects)
+    response = submit(retried)
+
+    assert response.status_code == 200
+    assert retried.dispatcher.pending == [(TEAM_ID, job_id)]
+
+
+def test_result_written_before_the_final_record_is_not_published():
+    objects = FailingFinalObjects()
+    tracer = build_tracer(objects=objects)
+    job_id = submit(tracer).json()["job_id"]
+
+    objects.fail_final = True
+    with pytest.raises(StorageUnavailable):
+        tracer.dispatcher.run_pending()
+
+    assert tracer.client.get(f"/v1/ocr/jobs/{job_id}").json()["state"] == "running"
+    assert tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").status_code == 202
+    assert not tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json().get("pages")
+
+    # A rerun over the same objects publishes the single authoritative final.
+    objects.fail_final = False
+    restarted = build_tracer(objects=objects)
+    run_job(
+        store=restarted.store,
+        engine=restarted.engine,
+        clock=restarted.clock,
+        team_id=TEAM_ID,
+        job_id=job_id,
+    )
+    result = restarted.client.get(f"/v1/ocr/jobs/{job_id}/result")
+    assert result.status_code == 200
+    assert result.json()["state"] == "succeeded"
+    finalized_at = result.json()["timestamps"]["finalized_at"]
+
+    run_job(
+        store=restarted.store,
+        engine=restarted.engine,
+        clock=restarted.clock,
+        team_id=TEAM_ID,
+        job_id=job_id,
+    )
+    assert restarted.client.get(f"/v1/ocr/jobs/{job_id}/result").json()["timestamps"][
+        "finalized_at"
+    ] == finalized_at
+    assert [name for name in objects.names() if name.endswith("final.json")] == [
+        job_object(job_id, "final.json")
+    ]
+
+
+def test_unavailable_storage_returns_503_and_creates_no_second_job():
+    tracer = build_tracer(objects=UnavailableObjects())
+
+    response = submit(tracer)
+
+    assert_error(response, 503, "storage_unavailable")
+    assert response.headers["Retry-After"] == "5"
+    assert "/" not in response.json()["error"]["message"]
+
+
+def test_a_failed_input_write_compensates_only_the_creators_own_records():
+    objects = FailingInputObjects()
+    tracer = build_tracer(objects=objects)
+
+    failed = submit(tracer)
+
+    assert_error(failed, 503, "storage_unavailable")
+    assert objects.names() == []
+
+    objects.fail_inputs = False
+    retried = submit(tracer)
+    assert retried.status_code == 202
+    assert len([name for name in objects.names() if name.endswith("job.json")]) == 1
+
+
+def test_two_teams_using_the_same_key_get_independent_jobs():
+    objects = InMemoryObjectStore()
+    team_a = build_tracer(objects=objects)
+    team_b = build_tracer(objects=objects, identity=StaticIdentity("team-b"))
+
+    first = submit(team_a)
+    second = submit(team_b)
+
+    assert (first.status_code, second.status_code) == (202, 202)
+    assert first.json()["job_id"] != second.json()["job_id"]
+    assert len([name for name in objects.names() if name.endswith("job.json")]) == 2
