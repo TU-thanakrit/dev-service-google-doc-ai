@@ -82,7 +82,8 @@ One image, three commands (`app.ocr_api`, `python -m app.ocr_worker`,
 | Worker | Job `dev-ocr-service-worker-<slug>` | `python -m app.ocr_worker`, no args | the job name is the version pin; identity arrives as env overrides |
 | Reconcile | Job `dev-ocr-service-reconcile` | `python -m app.ocr_reconcile`, no args | run by Cloud Scheduler |
 
-Environment (`OCR_*`): `OCR_PROJECT`, `OCR_BUCKET`, `OCR_REGION`,
+Environment (`OCR_*`): `OCR_PROJECT`, `OCR_BUCKET`, `OCR_BUCKET_PROJECT` (the
+bucket's own project; defaults to `OCR_PROJECT`), `OCR_REGION`,
 `OCR_WORKER_JOB_NAME`, `OCR_WORKER_CONTAINER_NAME`, `OCR_WORKER_REVISION_DIGEST`,
 `OCR_ENGINE_REF`, `OCR_TASK_TIMEOUT_S`, `OCR_API_AUDIENCE`, `OCR_TEAMS` (a JSON
 `email -> team_id` map), and for the worker `OCR_JOB_TEAM_ID` / `OCR_JOB_ID`
@@ -91,6 +92,45 @@ container args, env, and the timeout: there is no image field, so the versioned
 job name *is* part of the pin (§8). The pre-launch template read-and-compare of
 the pin (D43) and resolving the real execution name are **not** implemented
 (ticket #11) and are deployment evidence ([B2]).
+
+## Cross-project bucket
+
+The durable bucket may live in a different project than the service. `OCR_BUCKET_PROJECT`
+names the bucket's own project and is passed to `create_gcs_ocr_store` in all three
+compositions (`app.ocr_api`, `app.ocr_worker`, `app.ocr_reconcile`); it defaults to
+`OCR_PROJECT`, so a single-project deployment is unchanged. Only the store is
+cross-project: dispatch and reconcile still address Cloud Run jobs in `OCR_PROJECT`
+(§8), which is the service's project.
+
+Provisioned by the project owner and read back on 2026-11-08 with account
+`thanakrit.boonquarmdee@thaiunion.com`:
+
+| Fact | Value |
+|---|---|
+| bucket | `gs://dev-ocr-service-data-asse1-1022222817897` |
+| bucket project | `thaiunion-shared-sandbox` |
+| service project | `thaiunion-ai-platform` |
+| location | `ASIA-SOUTHEAST1` (region) |
+| uniform bucket-level access | `true` |
+| soft-delete retention | `0s` |
+| public access prevention | `inherited` - left unchanged; bucket IAM and PAP are administrator actions here |
+
+Evidence: `tests/test_ocr_gcs_integration.py` ran against that bucket with the
+caller's ADC identity (`thanakrit.boonquarmdee@thaiunion.com`, quota project
+`thaiunion-shared-sandbox`). It created one generated `idem/` metadata record,
+exercised create-if-absent, generation-matched replace, and conditional delete,
+then deleted it and read its unique prefix back as empty. No document content was
+written and no bucket setting was changed. This is real bucket behaviour, not a
+fake-client result; it says nothing about the Cloud Run runtime.
+
+**Remaining blocker (runtime identity).** The bucket's IAM policy carries only
+`thaiunion-shared-sandbox` project-level legacy bindings (`legacyBucketOwner` /
+`Reader`, `legacyObjectOwner` / `Reader`). The API, worker, and reconcile runtime
+service accounts in `thaiunion-ai-platform` therefore have **no** object access to
+this bucket. Granting it is an administrator action: this slice did not attempt it,
+and the development account is reported to lack `storage.buckets.setIamPolicy`. An
+administrator must bind those runtime identities to the bucket (or move the bucket
+into the service project) before a deployed execution can read or write durable state.
 
 ## Verification (offline only)
 
@@ -131,7 +171,10 @@ An administrator must provide, at minimum:
    pinned digest.
 2. A GCS bucket named `dev-ocr-service-*` with Object Versioning **disabled** and
    soft-delete retention **0** (contract §5.1, D17), plus the read-back evidence
-   ([B4]).
+   ([B4]). **Partly provided**: `gs://dev-ocr-service-data-asse1-1022222817897`
+   exists in `thaiunion-shared-sandbox` with the required settings (see
+   *Cross-project bucket*); what is still missing is object access for the runtime
+   identities below.
 3. A dedicated API runtime service account holding `run.invoker` on the service
    and `run.jobs.get` + `run.jobs.runWithOverrides` on the worker job; a
    dedicated worker service account with object access to the bucket; a
