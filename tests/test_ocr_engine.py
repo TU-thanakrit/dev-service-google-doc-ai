@@ -91,6 +91,30 @@ class ScriptedRunner:
         return [Path(argv[0]).name for argv, _, _ in self.calls]
 
 
+class FakeMonotonic:
+    """An explicit monotonic source: the test moves it, so elapsed time is exact."""
+
+    def __init__(self, start: float = 0.0) -> None:
+        self.value = start
+
+    def __call__(self) -> float:
+        return self.value
+
+
+class ElapsingRunner(ScriptedRunner):
+    """A runner whose every command advances the injected monotonic by `step`."""
+
+    def __init__(self, clock, *, step, handlers=None, timeout=()):
+        super().__init__(handlers, timeout=timeout)
+        self._clock = clock
+        self._step = step
+
+    def run(self, argv, *, timeout, stdin=None, env=None):
+        result = super().run(argv, timeout=timeout, stdin=stdin, env=env)
+        self._clock.value += self._step
+        return result
+
+
 def render(argv) -> CommandResult:
     """Emulate pdftoppm writing one PNG at `<prefix>-1.png`."""
     prefix = Path(argv[-1])
@@ -392,7 +416,7 @@ def build_tracer(engine):
             dispatcher=dispatcher,
             clock=clock,
             verifier=FakeTokenVerifier({TOKEN: Principal(email=EMAIL, subject="sub-a")}),
-            directory=MappingTeamDirectory({EMAIL: TEAM}),
+            directory=MappingTeamDirectory({f"{EMAIL}|sub-a": TEAM}),
         ),
         headers={"Authorization": f"Bearer {TOKEN}"},
         raise_server_exceptions=False,
@@ -470,7 +494,10 @@ def test_every_command_of_one_page_is_bounded_by_the_page_budget():
 
     # The page has no usable text layer, so the call issues pdftotext, pdftoppm,
     # and tesseract; each must be capped by the tighter deadline-derived budget.
-    CommandOcrEngine(runner).recognize_page(PDF_BYTES, PDF, 1, timeout_s=2.5)
+    # The monotonic source is frozen, so no time passes between the commands.
+    CommandOcrEngine(runner, monotonic=FakeMonotonic()).recognize_page(
+        PDF_BYTES, PDF, 1, timeout_s=2.5
+    )
 
     assert [timeout for _, timeout, _ in runner.calls] == [2.5, 2.5, 2.5]
 
@@ -478,7 +505,7 @@ def test_every_command_of_one_page_is_bounded_by_the_page_budget():
 def test_a_page_budget_never_widens_the_configured_ceiling():
     runner = pdf_ocr_runner()
 
-    CommandOcrEngine(runner, ocr_timeout_s=90.0).recognize_page(
+    CommandOcrEngine(runner, ocr_timeout_s=90.0, monotonic=FakeMonotonic()).recognize_page(
         PDF_BYTES, PDF, 1, timeout_s=600.0
     )
 
@@ -489,9 +516,60 @@ def test_a_page_budget_never_widens_the_configured_ceiling():
 def test_the_page_count_decode_is_bounded_by_its_budget():
     runner = ScriptedRunner({"pdfinfo": lambda argv: ok(b"Pages: 2\n")})
 
-    assert CommandOcrEngine(runner).page_count(PDF_BYTES, PDF, timeout_s=1.25) == 2
+    assert (
+        CommandOcrEngine(runner, monotonic=FakeMonotonic()).page_count(
+            PDF_BYTES, PDF, timeout_s=1.25
+        )
+        == 2
+    )
 
     assert runner.calls[0][1] == 1.25
+
+
+def test_each_command_of_one_page_sees_only_the_remaining_page_budget():
+    # One page's allowance is spent down across its commands, not handed out afresh
+    # to each: pdftotext, the render, and tesseract draw from the same shrinking
+    # budget, so their timeouts are 3.0, then 2.25, then 1.5.
+    clock = FakeMonotonic()
+    runner = ElapsingRunner(
+        clock,
+        step=0.75,
+        handlers={
+            "pdftotext": lambda argv: ok(b"\n"),
+            "pdftoppm": render,
+            "tesseract": lambda argv: ok(b"ocr text\n"),
+        },
+    )
+
+    CommandOcrEngine(runner, monotonic=clock).recognize_page(
+        PDF_BYTES, PDF, 1, timeout_s=3.0
+    )
+
+    assert runner.programs() == ["pdftotext", "pdftoppm", "tesseract"]
+    assert [timeout for _, timeout, _ in runner.calls] == [3.0, 2.25, 1.5]
+
+
+def test_a_page_command_arriving_after_the_budget_is_spent_is_refused():
+    # The first command consumes the whole allowance, so the render must never be
+    # issued with a fresh full-length timeout: the page fails as a transient error.
+    clock = FakeMonotonic()
+    runner = ElapsingRunner(
+        clock,
+        step=2.0,
+        handlers={
+            "pdftotext": lambda argv: ok(b"\n"),
+            "pdftoppm": render,
+            "tesseract": lambda argv: ok(b"unreachable\n"),
+        },
+    )
+
+    with pytest.raises(EnginePageError) as excinfo:
+        CommandOcrEngine(runner, monotonic=clock).recognize_page(
+            PDF_BYTES, PDF, 1, timeout_s=2.0
+        )
+
+    assert excinfo.value.code == TRANSIENT_ERROR
+    assert runner.programs() == ["pdftotext"]
 
 
 def test_the_provisional_engine_requires_an_explicit_dev_opt_in(monkeypatch):

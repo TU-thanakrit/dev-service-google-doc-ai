@@ -11,6 +11,7 @@ import hashlib
 import logging
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Protocol
@@ -164,18 +165,47 @@ class TeamDirectory(Protocol):
     def team_id(self, principal: Principal) -> str | None: ...
 
 
-class MappingTeamDirectory:
-    """Deployed allowlist: verified principal email -> internal team_id.
+# A deployed allowlist entry is keyed by the verified principal's canonical
+# `email|subject`, so a binding holds *both* claims (§7.3): a forged or reused
+# email presented with another subject is simply not a key. The separator cannot
+# occur in an email, and a subject cannot contain one either.
+TEAM_KEY_SEPARATOR = "|"
 
-    `team_id` is the internal ownership key (never an email), so a future Entra
-    identity can be mapped onto the same records (issue #5).
+
+def team_key(email: str, subject: str) -> str:
+    """The canonical allowlist key of one verified principal (§7.3)."""
+    return f"{email}{TEAM_KEY_SEPARATOR}{subject}"
+
+
+def parse_team_key(key: str) -> tuple[str, str]:
+    """The `(email, subject)` a binding key names, or `ValueError` (§7.3).
+
+    Strict on purpose: a key that does not carry both verified claims is a
+    deployment fault, and the alternative — accepting it — would silently
+    authorize nobody, or authorize an email without its subject.
+    """
+    email, separator, subject = key.partition(TEAM_KEY_SEPARATOR)
+    if not separator or not email or not subject or TEAM_KEY_SEPARATOR in subject:
+        raise ValueError("a team binding key must be '<email>|<subject>'")
+    return email, subject
+
+
+class MappingTeamDirectory:
+    """Deployed allowlist: canonical `email|subject` -> internal team_id (§7.3).
+
+    Identity is the pair of verified claims, never the email alone, so an
+    allowlisted service account stays itself only with its own `sub`. `team_id` is
+    the internal ownership key (never an email), so a future Entra identity can be
+    mapped onto the same records (issue #5).
     """
 
-    def __init__(self, teams: dict[str, str]) -> None:
+    def __init__(self, teams: Mapping[str, str]) -> None:
+        for key in teams:
+            parse_team_key(key)
         self._teams = dict(teams)
 
     def team_id(self, principal: Principal) -> str | None:
-        return self._teams.get(principal.email)
+        return self._teams.get(team_key(principal.email, principal.subject))
 
 
 @dataclass(frozen=True, slots=True)
@@ -547,7 +577,11 @@ def _submit(
             )
 
         record, generation = existing
-        job = store.get_job(team_id, record.job_id)
+        # Lightweight metadata only (`job.json` + `final.json` + `dispatch.json`):
+        # a submission decides liveness from records that are not deleted before
+        # content, so a partially cleaned-up job never makes this read load a
+        # result object that cleanup has already removed (§3.3/D39).
+        job = store.get_job_meta(team_id, record.job_id)
         same_content = record.content_hash == content_hash and record.byte_length == len(content)
 
         if job is not None and now < _deny_instant(job):
@@ -557,7 +591,7 @@ def _submit(
                 # A same-key retry starts no second logical job; it only repairs
                 # a materialization or dispatch intent that a crash lost.
                 _materialize(store, dispatcher, job, content, limits=limits, now=now)
-            return 200, store.get_job(team_id, job.job_id) or job
+            return 200, store.get_job_meta(team_id, job.job_id) or job
 
         if job is None and now - record.claimed_at < MATERIALIZATION_GRACE:
             if not same_content:
@@ -573,7 +607,7 @@ def _submit(
                 dispatcher=dispatcher,
             )
             _materialize(store, dispatcher, rebuilt, content, limits=limits, now=now)
-            return 200, store.get_job(team_id, rebuilt.job_id) or rebuilt
+            return 200, store.get_job_meta(team_id, rebuilt.job_id) or rebuilt
 
         # Expired, or a stale claim whose job record is gone: replace the record
         # at the generation read, conditional on it still naming that job.
@@ -637,7 +671,7 @@ def _accept(
         if claim_generation is not None and created:
             _compensate(store, team_id, key_hash, job, claim_generation, now=now)
         raise
-    return 202, store.get_job(team_id, job.job_id) or job
+    return 202, store.get_job_meta(team_id, job.job_id) or job
 
 
 def _is_retryable(code: str) -> bool:
@@ -650,16 +684,27 @@ def _is_retryable(code: str) -> bool:
 
 
 def _recognize_page(
-    engine: OcrEngine, job: JobRecord, content: bytes, page_number: int, *, timeout_s: float
+    engine: OcrEngine,
+    job: JobRecord,
+    content: bytes,
+    page_number: int,
+    *,
+    lease: Lease | None,
+    clock: Clock,
 ) -> PageResult:
     """Recognize one page, re-issuing a transient failure up to `PAGE_RETRIES`.
 
-    `timeout_s` is the client-side bound for the call, derived from the job's
-    deadline and the attempt's live-lease window. A retry re-issues the call at
-    the same bound, so a retry chain cannot outlive the page's window (§5.5, D42).
+    The page's window is asked for again before every operation, the retries
+    included, so a retry chain draws from the same shrinking allowance the engine's
+    own commands do and is refused the moment it is spent (§5.5, D42). A page whose
+    window closed before its retry is reported failed at the deadline rather than
+    re-issued.
     """
     attempts = 0
     while True:
+        timeout_s = _attempt_budget(job, lease, clock.now())
+        if timeout_s is None:
+            return _failed_page(page_number, DEADLINE_PAGE_ERROR)
         try:
             page = engine.recognize_page(
                 content, job.mime_type, page_number, timeout_s=timeout_s
@@ -719,7 +764,7 @@ def _recognize_pages(
         if budget is None:
             break
         page = _recognize_page(
-            engine, job, content, page_number, timeout_s=budget
+            engine, job, content, page_number, lease=lease, clock=clock
         )
         if _attempt_budget(job, lease, clock.now()) is None:
             # The page call was abandoned at its window's end: it contributes no
@@ -729,7 +774,16 @@ def _recognize_pages(
             store.put_page_checkpoint(job, page, now=clock.now())
         pages.append(page)
     for page_number in range(len(pages) + 1, total + 1):
-        pages.append(_failed_page(page_number, DEADLINE_PAGE_ERROR))
+        # A page this attempt never reached still credits a durable checkpoint an
+        # earlier attempt wrote (a page out of order, or a hole a permanent failure
+        # left), so only a genuinely missing page is reported failed at the
+        # deadline and one entry per source page is kept (§2.6, D42).
+        checkpoint = store.read_page_checkpoint(job, page_number)
+        pages.append(
+            checkpoint
+            if checkpoint is not None
+            else _failed_page(page_number, DEADLINE_PAGE_ERROR)
+        )
     return pages, lease
 
 
@@ -948,6 +1002,26 @@ def finalize_deadline(job: JobRecord, now: datetime) -> None:
     job.reason = DEADLINE_PAGE_ERROR
     job.finalized_at = now
     job.expires_at = now + RETENTION
+
+
+def deadline_page_accounting(
+    checkpoints: list[PageResult], pages_total: int | None
+) -> list[PageResult]:
+    """One ordered entry per known source page, at the deadline (§2.6, D42).
+
+    The known pages are the persisted `pages_total` and every durable checkpoint,
+    whichever reaches higher: a checkpoint past the byte scan's count is still a
+    real page. A page keeps its checkpoint when one exists, so a page that
+    succeeded out of order — or after a permanent failure left a hole — is credited
+    rather than reported failed; only a genuinely missing page becomes a
+    `deadline_exceeded` entry, and none is dropped or invented.
+    """
+    known = {page.page_number: page for page in checkpoints}
+    total = max(pages_total or 0, max(known, default=0))
+    return [
+        known.get(number) or _failed_page(number, DEADLINE_PAGE_ERROR)
+        for number in range(1, total + 1)
+    ]
 
 
 def create_ocr_tracer_app(

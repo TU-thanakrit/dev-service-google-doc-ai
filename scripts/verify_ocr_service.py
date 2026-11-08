@@ -19,6 +19,7 @@ records that no such run has been performed.
 """
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -28,11 +29,18 @@ from pathlib import Path
 
 import httpx
 
-from app.ocr_verification import summarize_result_body, verify_result_body
+from app.ocr_verification import (
+    HTTP_ERROR_CODES,
+    REDACTED,
+    summarize_result_body,
+    verify_result_body,
+)
 
 FINAL_STATES = {"succeeded", "partially_succeeded", "failed"}
 # The contract's own hint for a retry while the job is not final (§2.2).
 DEFAULT_POLL_INTERVAL_S = 10.0
+# Report keys that are never copied from a response without an allowlist check.
+SAFE_CONTENT_TYPES = {"application/json"}
 
 
 def identity_token(base_url: str, *, impersonate: str | None) -> str:
@@ -103,7 +111,9 @@ def verify_document(
     submission = submit(client, base_url, path, idempotency_key=key)
     result: dict = {
         "file": path.name,
-        "idempotency_key": key,
+        # The key is a caller credential: the report records only its one-way
+        # digest, so a report file or a printed run cannot replay the key.
+        "idempotency_key_sha256": hashlib.sha256(key.encode()).hexdigest(),
         "submitted": submission.status_code,
         "errors": [],
     }
@@ -194,7 +204,13 @@ def _body(response: httpx.Response, include_responses: bool) -> dict:
     if isinstance(payload, dict):
         safe["schema_version"] = payload.get("schema_version")
         error = payload.get("error")
-        safe["error"] = error.get("code") if isinstance(error, dict) else None
+        if isinstance(error, dict):
+            code = error.get("code")
+            # The code is copied only when §2.7 names it; anything else is a value
+            # the untrusted body could use to smuggle text into the report.
+            safe["error"] = code if code is None or code in HTTP_ERROR_CODES else REDACTED
+        else:
+            safe["error"] = None
     return safe
 
 

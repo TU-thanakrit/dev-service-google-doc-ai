@@ -86,8 +86,12 @@ captured bytes; a timeout raises `CommandTimeout` and a spawn failure
 
 These are strict ceilings, and each one is additionally capped by the
 deadline-scoped page budget of §5.5/D42 the caller passes in (issue #11,
-`docs/ocr-v1-dispatch.md`): every command is issued with
-`min(configured_ceiling, timeout_s)`, so a budget can only shorten a ceiling. The
+`docs/ocr-v1-dispatch.md`): a page's (or a decode's) `timeout_s` becomes one
+monotonic deadline at entry, and every command is issued with the *remaining*
+allowance — `min(configured_ceiling, deadline - now)` — so a budget can only
+shorten a ceiling, and a page's commands share one shrinking allowance instead of
+each getting a fresh full-length one. A command arriving after the allowance is
+spent fails as a transient page error rather than running past the window. The
 budget is the tighter of `deadline_at - now` and the attempt's remaining live
 lease window, and the ceilings still stop one hung binary from stalling an attempt.
 
@@ -196,8 +200,9 @@ the benchmark ([B3]).
 
 The deadline-scoped page timeout that also carries the #11 label is implemented
 here, as this adapter's half of it: `page_count` and `recognize_page` take the
-caller's `timeout_s` and every external command is issued with
-`min(configured_ceiling, timeout_s)`, so a page budget can only shorten one of
-this adapter's own ceilings, never lengthen it. The lease heartbeat and the CAS
-read-then-act limit both it and the page budget inherit are stated in
-`docs/ocr-v1-dispatch.md`.
+caller's `timeout_s`, turn it into one monotonic deadline, and issue every external
+command with the remaining allowance — `min(configured_ceiling, deadline - now)` —
+so a page budget can only shorten one of this adapter's own ceilings, never
+lengthen it, and the page's commands share it rather than resetting it. The lease
+heartbeat and the CAS read-then-act limit both it and the page budget inherit are
+stated in `docs/ocr-v1-dispatch.md`.

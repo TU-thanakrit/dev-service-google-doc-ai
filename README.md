@@ -55,6 +55,11 @@ identity is `403 team_not_authorized`. `X-Serverless-Authorization` is not read:
 Cloud Run strips its signature, so it cannot be verified. See
 `docs/ocr-v1-n8n-workflow.md` for the same flow from n8n.
 
+An allowlist entry in `OCR_TEAMS` is keyed by the **pair** `<email>|<subject>`
+(the ID token's verified `email` and `sub`), so an allowlisted address presented
+with a different subject is unauthorized — a reused or forged address cannot
+borrow a team. A key without both claims fails at startup.
+
 ## Local development
 
 ```bash
@@ -109,7 +114,7 @@ gcloud run deploy dev-ocr-service-api \
   --service-account tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
   --no-allow-unauthenticated \
   --max-instances 4 --memory 512Mi --cpu 1 \
-  --set-env-vars '^@^OCR_PROJECT=thaiunion-ai-platform@OCR_REGION=asia-southeast1@OCR_BUCKET=dev-ocr-service-data-asse1-1022222817897@OCR_BUCKET_PROJECT=thaiunion-shared-sandbox@OCR_API_AUDIENCE=https://dev-ocr-service-api-REPLACE.a.run.app@OCR_TEAMS={"tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com":"team-dev"}@OCR_WORKER_REVISION_DIGEST=sha256:REPLACE@OCR_TASK_TIMEOUT_S=1800@OCR_TASK_MAX_RETRIES=0'
+  --set-env-vars '^@^OCR_PROJECT=thaiunion-ai-platform@OCR_REGION=asia-southeast1@OCR_BUCKET=dev-ocr-service-data-asse1-1022222817897@OCR_BUCKET_PROJECT=thaiunion-shared-sandbox@OCR_API_AUDIENCE=https://dev-ocr-service-api-REPLACE.a.run.app@OCR_TEAMS={"tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com|REPLACE-WITH-SUBJECT":"team-dev"}@OCR_WORKER_REVISION_DIGEST=sha256:REPLACE@OCR_TASK_TIMEOUT_S=1800@OCR_TASK_MAX_RETRIES=0'
 ```
 
 `^@^` is the environment-variable delimiter, chosen because `OCR_TEAMS` and the

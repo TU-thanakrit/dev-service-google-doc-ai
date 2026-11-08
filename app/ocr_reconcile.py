@@ -9,11 +9,11 @@ Rows are evaluated in order. Reconciliation never resumes page work; it only
 dispatches, finalizes, or leaves a job for its deadline.
 
 Deferred, and named rather than silently missing: the capacity set, cleanup, and
-the missing-input/`idem`-record repairs of §6.2 belong to later tickets. So does
-assembling page checkpoints on the deadline path: reconciliation has no engine,
-so it cannot know a job's page count and finalizes the deadline `failed` with no
-page list rather than claim a wrong one. Resuming and accounting for such a job
-belongs to the deadline ticket (#9).
+the missing-input/`idem`-record repairs of §6.2 belong to later tickets. The
+deadline path does account for every page it can know: reconciliation has no
+engine, so it credits the durable checkpoints and the persisted page count and
+reports each remaining page failed at the deadline, rather than finalizing with a
+short or wrong page list.
 """
 
 from app.ocr_dispatch import Dispatcher, launch
@@ -25,7 +25,7 @@ from app.ocr_store import (
     DurableOcrStore,
     JobRecord,
 )
-from app.ocr_tracer import RETENTION, Clock, finalize_deadline
+from app.ocr_tracer import RETENTION, Clock, deadline_page_accounting, finalize_deadline
 
 
 def reconcile(*, store: DurableOcrStore, dispatcher: Dispatcher, clock: Clock) -> list[str]:
@@ -66,7 +66,11 @@ def _reconcile_job(
         # A worker that crossed the deadline already published its usable pages;
         # a job reaching here keeps whatever its attempts checkpointed, so a page
         # that durably succeeded is still reported rather than discarded (§6.2).
-        job.pages = store.read_page_checkpoints(job)
+        # Every known source page gets an entry: the persisted count and every
+        # durable checkpoint, with a missing page reported failed at the deadline.
+        job.pages = deadline_page_accounting(
+            store.read_page_checkpoints(job), job.pages_total
+        )
         finalize_deadline(job, now)
         store.publish(job, fence=RECONCILER_FENCE)
         return f"finalized:deadline_exceeded:{job.team_id}/{job.job_id}"

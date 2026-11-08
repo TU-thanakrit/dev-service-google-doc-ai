@@ -47,11 +47,23 @@ JOB_ENV_NAMES = frozenset({JOB_TEAM_ENV, JOB_ID_ENV})
 # pin mismatch of step 2.
 NON_RETRYABLE_STATUS = (403, 404)
 
+# The one code a non-retryable launch may be recorded with (§6.1 step 5, §2.7).
+# Reconciliation finalizes such a job `failed`/`engine_unavailable` and its action
+# line names the code, so a code the adapter invented must never be the one
+# recorded: it would widen the published vocabulary.
+ENGINE_UNAVAILABLE = "engine_unavailable"
+
 
 class LaunchNotRetryable(Exception):
-    """A launch error that retrying cannot fix; reconciliation finalizes the job."""
+    """A launch error that retrying cannot fix; reconciliation finalizes the job.
 
-    def __init__(self, code: str = "engine_unavailable") -> None:
+    `code` is diagnostic only and is deliberately **not trusted**: `launch`
+    records the fixed `engine_unavailable` regardless of it, so an adapter (or a
+    compromised response) cannot push an arbitrary string into the store, the logs,
+    or reconciliation's action line.
+    """
+
+    def __init__(self, code: str = ENGINE_UNAVAILABLE) -> None:
         super().__init__(code)
         self.code = code
 
@@ -101,8 +113,10 @@ def launch(store: DurableOcrStore, dispatcher: Dispatcher, job: JobRecord) -> No
     """
     try:
         execution_ref = dispatcher.dispatch(job)
-    except LaunchNotRetryable as exc:
-        store.record_dispatch_error(job, exc.code)
+    except LaunchNotRetryable:
+        # The fixed code, never the exception's own `code`: an adapter-supplied
+        # string must not reach the store, a log, or reconciliation (§2.7).
+        store.record_dispatch_error(job, ENGINE_UNAVAILABLE)
         return
     store.record_dispatch_ack(job, execution_ref)
 

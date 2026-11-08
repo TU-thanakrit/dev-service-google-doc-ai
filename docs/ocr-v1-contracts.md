@@ -528,9 +528,13 @@ execution is duplicated OCR work, bounded by the lease TTL, the `≤2`-attempt d
    reconciliation may remove it once the job is final. Finalization writes no other object, and in
    particular it does **not** project the final state into `job.json` (D39 retracts D33).
 
-Readers resolve a result **only** through `final.json.result_object`, and read final state and expiry
-only from `final.json`; a `result.*.json` without a matching `final.json` is unpublished and ignored
-(cleanup removes it by enumeration). **Assurance limit:** the two steps that produce durable state are
+Readers resolve a result **only** through `final.json.result_object`, and only when that name is exactly
+this job's own `jobs/{team}/{job}/result.{fence}.json` — a name pointing at another job, outside the
+job's directory, or at a different fence is corruption to fail closed on, not a path to follow. Final
+state and expiry are read only from `final.json`; a `result.*.json` without a matching `final.json` is
+unpublished and ignored (cleanup removes it by enumeration). Likewise a stored record whose embedded
+identity is not the path it was read from (`job.json`'s `job_id`/`team_id`, a result's `job_id`) is
+corruption, never this job's state. **Assurance limit:** the two steps that produce durable state are
 independent single-object writes with no cross-object transaction, so a crash can leave a result without
 a `final.json` (unpublished, ignored) or a capacity entry that was never released (over-reserved until
 its own time bound). Nothing needs repairing, because no reader consults a derived projection. "Exactly
@@ -802,8 +806,11 @@ for authorization. Fronting with a Google-managed proxy that signs its own ident
 retained future alternative [B2]. Two independent layers mean neither a forged header nor a
 misconfigured invoker alone can impersonate a team.
 
-**Mapping (§7.3).** A deployed allowlist maps a verified principal (service-account `email`, keyed
-additionally by `sub`) to an internal `team_id`, loaded from configuration at startup. Unmapped →
+**Mapping (§7.3).** A deployed allowlist maps a verified principal to an internal `team_id`, loaded from
+configuration at startup. A key binds the **pair** of verified claims — the ID token's `email` and its
+`sub`, written `<email>|<subject>` — so an allowlisted address presented with another subject is
+unmapped, and a reused or forged address cannot borrow a team. A key without both claims is a startup
+failure. Unmapped →
 `403 team_not_authorized`. `team_id` is derived **only** from verified identity — never from body,
 path, query, or a header — and is written into `job.json` and the idempotency path at creation.
 Ownership is enforced on every job/result operation by comparing the stored `team_id` with the caller's

@@ -941,8 +941,10 @@ misconfigured invoker alone can impersonate a team.
 
 ### 6.3 Caller → team mapping
 
-A deployed allowlist maps a verified principal (service-account `email`, keyed additionally by `sub`) to
-an internal `team_id`, loaded from configuration at startup.
+A deployed allowlist maps a verified principal to an internal `team_id`, loaded from configuration at
+startup. A key binds the **pair** of verified claims, `<email>|<subject>`: an allowlisted address
+presented with another subject is unmapped, so a reused or forged address cannot borrow a team. A key
+without both claims is a startup failure.
 
 - Unmapped principal → `403 team_not_authorized`.
 - `team_id` is derived **only** from verified identity, never from the body, path, query, or a header, and

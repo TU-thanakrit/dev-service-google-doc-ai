@@ -81,7 +81,7 @@ def build(*, engine, objects=None):
             verifier=FakeTokenVerifier(
                 {DEMO_TOKEN: Principal(email=DEMO_EMAIL, subject="demo-subject")}
             ),
-            directory=MappingTeamDirectory({DEMO_EMAIL: "demo-team"}),
+            directory=MappingTeamDirectory({f"{DEMO_EMAIL}|demo-subject": "demo-team"}),
         ),
         headers={"Authorization": f"Bearer {DEMO_TOKEN}"},
         raise_server_exceptions=False,

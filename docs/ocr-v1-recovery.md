@@ -47,7 +47,8 @@ per-call list when a retry needs scripting.
 (ticket #7). The per-page timing model (`page_timeout`, gave-up-at-deadline calls
 issued with a client-side timeout) is implemented (ticket #11): `page_count` and
 `recognize_page` take a `timeout_s` derived from the job deadline and the live lease
-window, and a call that returns past its window contributes no page and is not
+window, a page's retries and every command it issues draw from that one shrinking
+allowance, and a call that returns past its window contributes no page and is not
 checkpointed. The numeric `page_timeout` value itself stays benchmark-gated ([B3]).
 
 ## Reviewed page-error categories and bounded retry

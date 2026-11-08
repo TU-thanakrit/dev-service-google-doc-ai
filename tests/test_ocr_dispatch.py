@@ -366,3 +366,17 @@ def test_a_drifted_template_is_recorded_as_a_non_retryable_dispatch_error():
     view = store.get_job(TEAM, job.job_id)
     assert (view.acknowledged, view.last_error_code) == (False, "engine_unavailable")
     assert view.finalized_at is None
+
+
+def test_an_arbitrary_launch_error_code_is_mapped_to_the_fixed_engine_unavailable():
+    # The launch error is untrusted input: an adapter could raise with any string
+    # it likes, and a code outside the contract must not reach the store, a log,
+    # or reconciliation's action line, where it would widen the published
+    # vocabulary. Only the fixed `engine_unavailable` is recorded (§6.1 step 5).
+    store, job = build_store_with_job()
+    store.create_dispatch(job)
+
+    launch(store, StubDispatcher(LaunchNotRetryable("engine_internals/bucket-name")), job)
+
+    view = store.get_job(TEAM, job.job_id)
+    assert (view.acknowledged, view.last_error_code) == (False, "engine_unavailable")
