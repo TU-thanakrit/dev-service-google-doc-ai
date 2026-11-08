@@ -26,7 +26,7 @@ CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
 def build_app(settings: OcrServiceSettings, *, session) -> FastAPI:
     """Compose the tracer app from the environment's settings and one session."""
-    store = create_gcs_ocr_store(settings.bucket, project=settings.project)
+    store = create_gcs_ocr_store(settings.bucket, project=settings.bucket_project)
     dispatcher = CloudRunJobsDispatcher(
         session=session,
         project=settings.project,

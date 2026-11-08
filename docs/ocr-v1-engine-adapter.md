@@ -119,8 +119,10 @@ Offline (fakes only, no binary executed, no cloud client constructed):
   timeouts and child env, allowlisted-only logging, plus the S1/S3 worker test that
   every source page is accounted for in order with its `text_source`, and the
   undecodable-container finalization.
-- `uv run pytest` → **201 passed, 8 skipped**; `uv run ruff check .` → clean;
-  `uv lock --check` → current.
+- `uv run pytest` → **201 passed, 8 skipped** at this slice's commit (207 passed,
+  8 skipped after merging the current integration tip); `uv run ruff check .` →
+  clean; `uv lock --check` → current; `scripts/ocr_tracer_demo.py` and
+  `scripts/ocr_worker_demo.py` → exit 0 with no cloud module imported.
 
 Env-gated local run against the real binaries and tracked fixtures:
 

@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     from app.gcs_objects import create_gcs_ocr_store
 
     settings = OcrServiceSettings()
-    store = create_gcs_ocr_store(settings.bucket, project=settings.project)
+    store = create_gcs_ocr_store(settings.bucket, project=settings.bucket_project)
     owner = os.environ.get("CLOUD_RUN_EXECUTION") or f"local-{settings.job_id}"
     return run_worker(
         store=store,
