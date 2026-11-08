@@ -4,6 +4,7 @@ Dev/test only: the tracer is assembled from injected fakes, no GCP client is
 created, and nothing here is evidence about real GCS behaviour.
 """
 
+import logging
 import subprocess
 import sys
 import threading
@@ -14,7 +15,13 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from app.ocr_tracer import SCHEMA_VERSION, EnginePage, EngineResult, create_ocr_tracer_app
+from app.ocr_tracer import (
+    JOB_LIFETIME,
+    SCHEMA_VERSION,
+    EnginePage,
+    EngineResult,
+    create_ocr_tracer_app,
+)
 from app.ocr_tracer_fakes import (
     ControllableDispatcher,
     FakeOcrEngine,
@@ -80,14 +87,16 @@ def build_tracer(
     engine=None,
     store=None,
     identity=None,
+    acknowledge=True,
 ):
     store = store or InMemoryOcrStore()
     engine = engine or FakeOcrEngine(pages)
     clock = FakeClock(START)
-    dispatcher = ControllableDispatcher(store=store, engine=engine, clock=clock)
+    dispatcher = ControllableDispatcher(
+        store=store, engine=engine, clock=clock, acknowledge=acknowledge
+    )
     app = create_ocr_tracer_app(
         store=store,
-        engine=engine,
         dispatcher=dispatcher,
         clock=clock,
         identity=identity or StaticIdentity(team_id),
@@ -136,7 +145,7 @@ def test_health_returns_ok():
     assert response.json() == {"status": "ok"}
 
 
-def test_submission_returns_job_identity_before_recognition_runs():
+def test_submission_returns_identity_and_dispatch_metadata_before_recognition_runs():
     tracer = build_tracer()
 
     response = submit(tracer)
@@ -153,7 +162,12 @@ def test_submission_returns_job_identity_before_recognition_runs():
             "finalized_at": None,
             "expires_at": None,
         },
-        "dispatch": {"acknowledged": False, "execution_ref": None},
+        # AC #2 engine-processing metadata: the recorded launch intent is what the
+        # caller sees, and the execution reference is stable for the job.
+        "dispatch": {
+            "acknowledged": True,
+            "execution_ref": f"fake-execution-{body['job_id']}",
+        },
     }
     assert uuid.UUID(body["job_id"]).version == 4
     assert not any(field in body for field in EXPENSE_FIELDS)
@@ -458,6 +472,114 @@ def test_storage_failure_is_reported_without_leaking_details():
 
     assert_error(response, 500, "internal_error")
     assert "private-bucket" not in response.text
+
+
+def test_internal_failure_logs_a_fixed_category_not_the_external_error(caplog):
+    tracer = build_tracer(store=ExplodingStore())
+
+    with caplog.at_level(logging.ERROR, logger="app.ocr_tracer"):
+        response = tracer.client.get(
+            "/v1/ocr/jobs/6d1f9b2a-0000-4000-8000-000000000000",
+            headers={"X-Request-Id": "req-500"},
+        )
+
+    assert_error(response, 500, "internal_error", request_id="req-500")
+    logged = caplog.text
+    # Allowlisted fields only: a fixed category plus safe identifiers.
+    assert "internal_error" in logged
+    assert "req-500" in logged
+    assert "6d1f9b2a-0000-4000-8000-000000000000" in logged
+    # Never the external exception text, its class, or a traceback (D20).
+    assert "private-bucket" not in logged
+    assert "RuntimeError" not in logged
+    assert "Traceback" not in logged
+
+
+def test_engine_processing_metadata_is_stable_and_visible_to_callers():
+    tracer = build_tracer()
+    submitted = submit(tracer)
+    job_id = submitted.json()["job_id"]
+
+    polled = tracer.client.get(f"/v1/ocr/jobs/{job_id}").json()
+
+    assert submitted.json()["dispatch"]["acknowledged"] is True
+    assert submitted.json()["dispatch"]["execution_ref"]
+    assert polled["dispatch"] == submitted.json()["dispatch"]
+
+
+def test_jobs_pin_the_engine_and_worker_revision_without_exposing_them():
+    tracer = build_tracer()
+    job_id = submit(tracer).json()["job_id"]
+    tracer.dispatcher.run_pending()
+
+    job = tracer.store.get_job(TEAM_ID, job_id)
+    assert (job.engine_ref, job.worker_revision_digest) == (
+        tracer.dispatcher.engine_ref,
+        tracer.dispatcher.worker_revision_digest,
+    )
+
+    status = tracer.client.get(f"/v1/ocr/jobs/{job_id}").json()
+    result = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json()
+    assert not {"engine_ref", "worker_revision_digest"} & (status.keys() | result.keys())
+
+
+def test_a_launch_that_is_not_acknowledged_is_still_accepted():
+    tracer = build_tracer(acknowledge=False)
+
+    response = submit(tracer)
+
+    assert response.status_code == 202
+    assert response.json()["state"] == "accepted"
+    assert response.json()["dispatch"] == {"acknowledged": False, "execution_ref": None}
+
+
+def test_live_retry_returns_the_existing_status_without_dispatching_again():
+    tracer = build_tracer()
+    first = submit(tracer)
+
+    duplicate = submit(tracer)
+
+    assert duplicate.status_code == 200
+    assert duplicate.json() == first.json()
+    # One recorded launch intent for the one logical job: the retry starts no
+    # second dispatch and rewrites no dispatch metadata.
+    assert len(tracer.dispatcher.pending) == 1
+    tracer.dispatcher.run_pending()
+    assert len(tracer.engine.calls) == 1
+
+
+def test_worker_that_reaches_the_deadline_finalizes_it_without_processing():
+    tracer = build_tracer()
+    job_id = submit(tracer).json()["job_id"]
+    tracer.clock.advance(JOB_LIFETIME)
+
+    tracer.dispatcher.run_pending()
+
+    body = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json()
+    assert body["state"] == "failed"
+    assert body["reason"] == "deadline_exceeded"
+    assert body["page_count"] == 0
+    assert tracer.engine.calls == []
+
+
+def test_worker_crossing_the_deadline_cannot_finalize_succeeded():
+    engine = BlockingEngine()
+    tracer = build_tracer(engine=engine)
+    job_id = submit(tracer).json()["job_id"]
+
+    worker = threading.Thread(target=tracer.dispatcher.run_pending)
+    worker.start()
+    try:
+        assert engine.entered.wait(timeout=5)
+        tracer.clock.advance(JOB_LIFETIME + timedelta(seconds=1))
+    finally:
+        engine.release.set()
+        worker.join(timeout=5)
+
+    body = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json()
+    assert body["state"] == "failed"
+    assert body["reason"] == "deadline_exceeded"
+    assert body["completeness"] == "partial"
 
 
 def test_fake_mode_command_runs_the_lifecycle_without_cloud_clients():

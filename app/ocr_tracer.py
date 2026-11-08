@@ -29,6 +29,7 @@ RETENTION = timedelta(hours=24)
 ACCEPTED = "accepted"
 RUNNING = "running"
 SUCCEEDED = "succeeded"
+FAILED = "failed"
 
 # Allowlisted messages: no path, bucket, job, processor, or token.
 ERROR_MESSAGES = {
@@ -100,11 +101,16 @@ class OcrEngine(Protocol):
 
 
 class Dispatcher(Protocol):
-    """Records the launch intent for a job.
+    """Records the launch intent for a job and pins the worker that runs it.
 
-    Implementations must return without running recognition: submission answers
-    before recognition completes.
+    `engine_ref` and `worker_revision_digest` are the fake, stable per-worker
+    identity written once into every job (contract §8); comparing them against a
+    real Cloud Run template is a later ticket. Implementations must return
+    without running recognition: submission answers before recognition completes.
     """
+
+    engine_ref: str
+    worker_revision_digest: str
 
     def dispatch(self, job: "JobRecord") -> str | None: ...
 
@@ -141,6 +147,8 @@ class JobRecord:
     byte_length: int
     key_hash: str
     mime_type: str
+    engine_ref: str
+    worker_revision_digest: str
     input_content: bytes = field(default=b"", repr=False)
     state: str = ACCEPTED
     pages_total: int | None = None
@@ -293,6 +301,18 @@ def _result_body(job: JobRecord) -> dict[str, Any]:
     return body
 
 
+def _finalize_deadline(job: JobRecord, now: datetime) -> None:
+    """Finalize a job at or after its deadline; never `succeeded` (D42).
+
+    Partial page results belong to ticket #8, so this slice publishes no pages
+    and no combined text and the outcome is `failed`.
+    """
+    job.state = FAILED
+    job.reason = "deadline_exceeded"
+    job.finalized_at = now
+    job.expires_at = now + RETENTION
+
+
 def run_job(
     *,
     store: OcrStore,
@@ -305,36 +325,55 @@ def run_job(
 
     Local form of the Cloud Run Job entrypoint. It reads the job before writing
     anything and writes nothing when the job is absent or already final.
-    Per-page failure and partial finalization stay with ticket #8: the contract
-    fixes no `reason` for them, so this tracer does not invent one.
+    It never produces `succeeded` at or after `deadline_at` (D42): a worker that
+    reaches the job past the deadline finalizes `deadline_exceeded` without
+    processing it, and one that crosses the deadline while recognizing discards
+    that attempt's pages. Per-page failure and partial finalization stay with
+    ticket #8: the contract fixes no `reason` for them, so this tracer does not
+    invent one.
     """
     job = store.get_job(team_id, job_id)
     if job is None or job.finalized_at is not None:
+        return
+
+    now = clock.now()
+    if now >= job.deadline_at:
+        # No page work is allowed at or after the deadline, so nothing is
+        # recognized and the job is finalized as it stands.
+        _finalize_deadline(job, now)
+        store.save_job(job)
         return
 
     job.state = RUNNING
     store.save_job(job)
 
     result = engine.recognize(job.input_content, job.mime_type)
-    job.pages_total = len(result.pages)
-    job.pages = [
-        _page_result(number, page) for number, page in enumerate(result.pages, start=1)
-    ]
-    job.state = SUCCEEDED
-    job.finalized_at = clock.now()
-    job.expires_at = job.finalized_at + RETENTION
+    now = clock.now()
+    if now >= job.deadline_at:
+        _finalize_deadline(job, now)
+    else:
+        job.pages_total = len(result.pages)
+        job.pages = [
+            _page_result(number, page) for number, page in enumerate(result.pages, start=1)
+        ]
+        job.state = SUCCEEDED
+        job.finalized_at = now
+        job.expires_at = now + RETENTION
     store.save_job(job)
 
 
 def create_ocr_tracer_app(
     *,
     store: OcrStore,
-    engine: OcrEngine,
     dispatcher: Dispatcher,
     clock: Clock,
     identity: IdentityResolver,
 ) -> FastAPI:
-    """Build the tracer app from injected collaborators. Dev/test composition only."""
+    """Build the tracer app from injected collaborators. Dev/test composition only.
+
+    The recognition engine is owned by the injected dispatcher/worker, not by the
+    API, so the API never constructs or holds one.
+    """
     app = FastAPI(title="OCR v1 local lifecycle tracer (dev/test only)", version="0.1.0")
 
     @app.exception_handler(OcrError)
@@ -343,7 +382,14 @@ def create_ocr_tracer_app(
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
-        logger.exception("OCR tracer request failed")
+        # Allowlisted fields only: an external exception's text can carry a
+        # storage path or a token, so it is never logged (D20).
+        logger.error(
+            "ocr_tracer request failed error_code=%s request_id=%s job_id=%s",
+            "internal_error",
+            request.headers.get("X-Request-Id"),
+            request.path_params.get("job_id"),
+        )
         return _error(500, "internal_error", request)
 
     @app.get("/health")
@@ -377,11 +423,8 @@ def create_ocr_tracer_app(
         if existing is not None and now < _deny_instant(existing):
             if existing.content_hash != content_hash or existing.byte_length != len(content):
                 raise OcrError(409, "idempotency_conflict")
-            if existing.finalized_at is None:
-                # Live retry: intent is idempotent, and the job stays the same
-                # logical job, so no second recognition is started by this caller.
-                existing.execution_ref = dispatcher.dispatch(existing)
-                existing.acknowledged = existing.execution_ref is not None
+            # Live retry: it is the same logical job, so the caller gets the
+            # stored status and no second dispatch is started (contract §9.1).
             return JSONResponse(status_code=200, content=_status_body(existing))
 
         accepted_at = now
@@ -394,6 +437,8 @@ def create_ocr_tracer_app(
             byte_length=len(content),
             key_hash=key_hash,
             mime_type=declared_type,
+            engine_ref=dispatcher.engine_ref,
+            worker_revision_digest=dispatcher.worker_revision_digest,
             input_content=content,
         )
         store.save_job(job)

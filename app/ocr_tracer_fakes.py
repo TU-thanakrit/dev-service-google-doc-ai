@@ -9,6 +9,11 @@ from fastapi import Request
 
 from app.ocr_tracer import Clock, EngineResult, JobRecord, OcrEngine, OcrStore, run_job
 
+# Fake, stable worker identity pinned into every local job (contract §8). The real
+# per-revision pin, its template comparison, and its enforcement are ticket #11.
+FAKE_ENGINE_REF = "fake-ocr-engine:v1"
+FAKE_WORKER_REVISION_DIGEST = "sha256:fake-worker-revision-0001"
+
 
 class InMemoryOcrStore:
     """Fake store: one process, plain dicts, no generations or conditional writes."""
@@ -44,15 +49,27 @@ class FakeOcrEngine:
 class ControllableDispatcher:
     """Fake dispatcher: records the launch intent and runs nothing until asked."""
 
-    def __init__(self, *, store: OcrStore, engine: OcrEngine, clock: Clock) -> None:
+    def __init__(
+        self,
+        *,
+        store: OcrStore,
+        engine: OcrEngine,
+        clock: Clock,
+        acknowledge: bool = True,
+    ) -> None:
         self._store = store
         self._engine = engine
         self._clock = clock
+        self._acknowledge = acknowledge
+        self.engine_ref = FAKE_ENGINE_REF
+        self.worker_revision_digest = FAKE_WORKER_REVISION_DIGEST
         self.pending: list[tuple[str, str]] = []
 
     def dispatch(self, job: JobRecord) -> str | None:
         self.pending.append((job.team_id, job.job_id))
-        return None
+        # A stable fake execution reference, the way Cloud Run names an execution
+        # under the launched job; `acknowledge=False` is the lost-launch case.
+        return f"fake-execution-{job.job_id}" if self._acknowledge else None
 
     def run_pending(self) -> None:
         """Run every queued job, the way a worker would."""
