@@ -70,16 +70,11 @@ verifier that consumed it are historical evidence of the old behaviour; the old
 tests remain as baseline evidence for the old synchronous app, not as evidence that
 the asynchronous design works.
 
-**One document is not yet aligned: `AGENTS.md`.** Editing a repository
-agent-instruction file requires interactive approval, which this session could not
-obtain, so the write was refused and no workaround was attempted. Its current text
-still describes the expense POC as the present system, lists
-`uv run uvicorn app.main:app --reload` under *Commands*, and names
-`scripts/verify_examples.py`. Every one of those is now stale: the file needs the
-served entrypoint, the `OCR_*` environment, the current repository map, and
-`scripts/verify_ocr_service.py`. Until it is updated, treat `AGENTS.md`'s commands
-and repository map as out of date — this record and `README.md` are the current
-ones.
+`AGENTS.md` was aligned after the user explicitly approved the protected edit. It
+now names the OCR production entrypoint, `OCR_*` environment, current module map,
+async verifier, cross-project bucket, selected development runtime identity, and
+the separation between offline and cloud acceptance. The historical expense module
+is explicitly non-entrypoint code.
 
 The per-slice records (`docs/ocr-v1-dispatch.md`, `-lifecycle.md`, `-pinning.md`,
 `-recovery.md`, `-engine-adapter.md`, `-admission.md`) each say that the
@@ -118,9 +113,6 @@ environment-gated (7 engine-binary integration tests, 1 live GCS integration tes
 
 ## What closes the blocked items
 
-0. **An interactive session to align `AGENTS.md`** (protected file; the write needs
-   approval), so the repository's own instructions stop documenting the retired
-   expense entrypoint.
 1. **Administrator actions** — the Artifact Registry repository plus build/upload
    permission, the bucket `roles/storage.objectAdmin` binding for
    `tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com`, the Cloud
