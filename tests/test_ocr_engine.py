@@ -36,10 +36,12 @@ from app.ocr_tracer import (
     create_ocr_tracer_app,
 )
 from app.ocr_tracer_fakes import (
+    FAKE_ENGINE_REF,
     ControllableDispatcher,
     FakeTokenVerifier,
     InMemoryObjectStore,
     InMemoryOcrStore,
+    fake_engine_registry,
 )
 from app.ocr_worker import run_worker
 
@@ -408,7 +410,7 @@ def submit(tracer, *, key="engine-key-0001"):
 def run(tracer, job_id):
     return run_worker(
         store=tracer.store,
-        engine=tracer.engine,
+        engines=fake_engine_registry(tracer.engine),
         clock=tracer.clock,
         team_id=TEAM,
         job_id=job_id,
@@ -423,7 +425,9 @@ def test_the_worker_accounts_for_every_source_page_in_order_with_its_text_source
             "pdftotext": lambda argv: ok(f"หน้า {argv[2]}\n".encode()),
         }
     )
-    tracer = build_tracer(CommandOcrEngine(runner))
+    # A declared identity: the worker resolves its engine through the registry by
+    # the ref the accepted job recorded (§8).
+    tracer = build_tracer(CommandOcrEngine(runner, engine_ref=FAKE_ENGINE_REF))
     job_id = submit(tracer).json()["job_id"]
 
     assert run(tracer, job_id) == 0
@@ -440,7 +444,7 @@ def test_the_worker_accounts_for_every_source_page_in_order_with_its_text_source
 
 def test_an_undecodable_container_fails_the_job_as_unreadable_input():
     runner = ScriptedRunner({"pdfinfo": lambda argv: ok(b"not a pdf\n", returncode=1)})
-    tracer = build_tracer(CommandOcrEngine(runner))
+    tracer = build_tracer(CommandOcrEngine(runner, engine_ref=FAKE_ENGINE_REF))
     job_id = submit(tracer).json()["job_id"]
 
     assert run(tracer, job_id) == 0

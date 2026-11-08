@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from app.gcs_objects import create_gcs_ocr_store
     from app.ocr_config import OcrServiceSettings
-    from app.ocr_dispatch import CloudRunJobsDispatcher
+    from app.ocr_dispatch import CloudRunJobsDispatcher, CloudRunJobTemplateGuard
     from app.ocr_tracer import SystemClock
 
     settings = OcrServiceSettings()
@@ -117,11 +117,15 @@ def main(argv: list[str] | None = None) -> int:
         session=session,
         project=settings.project,
         region=settings.region,
-        job_name=settings.worker_job_name,
-        container_name=settings.worker_container_name,
-        engine_ref=settings.engine_ref,
-        worker_revision_digest=settings.worker_revision_digest,
-        task_timeout_s=settings.task_timeout_s,
+        # Reconciliation re-dispatches a job using the job's own recorded pin, so
+        # this current one only has to be valid, not equal to any live job's (§8).
+        pin=settings.pin(),
+        guard=CloudRunJobTemplateGuard(
+            session=session,
+            project=settings.project,
+            region=settings.region,
+            request_timeout_s=settings.request_timeout_s,
+        ),
         request_timeout_s=settings.request_timeout_s,
     )
     actions = reconcile(store=store, dispatcher=dispatcher, clock=SystemClock())

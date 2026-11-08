@@ -9,6 +9,7 @@ Fakes only. Real GCS concurrency, the real Cloud Run Jobs runtime, and the real
 `jobs:run` IAM surface remain unverified (docs/ocr-v1-contracts.md, B1/B2).
 """
 
+import json
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -18,6 +19,8 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from app.ocr_config import OcrServiceSettings
+from app.ocr_engine import EngineRegistry
+from app.ocr_pinning import WorkerPin
 from app.ocr_reconcile import reconcile
 from app.ocr_store import DISPATCH_ATTEMPT_CAP, DISPATCH_SPACING, LEASE_TTL
 from app.ocr_tracer import (
@@ -28,11 +31,13 @@ from app.ocr_tracer import (
     create_ocr_tracer_app,
 )
 from app.ocr_tracer_fakes import (
+    FAKE_ENGINE_REF,
     ControllableDispatcher,
     FakeOcrEngine,
     FakeTokenVerifier,
     InMemoryObjectStore,
     InMemoryOcrStore,
+    fake_engine_registry,
 )
 from app.ocr_worker import run_worker
 
@@ -100,7 +105,7 @@ def submit(tracer, *, key="retry-key-0001", content=PDF_BYTES):
 def run(tracer, job_id, *, owner="executions/exec-1"):
     return run_worker(
         store=tracer.store,
-        engine=tracer.engine,
+        engines=fake_engine_registry(tracer.engine),
         clock=tracer.clock,
         team_id=TEAM,
         job_id=job_id,
@@ -180,6 +185,121 @@ def test_the_worker_writes_nothing_for_an_unknown_or_already_final_job():
     assert run(tracer, job_id) == 1
     assert tracer.objects.names() == before
     assert len(tracer.engine.calls) == len(PAGES)
+
+
+# --- The engine the job was pinned to (§8, D16) ------------------------------
+
+NEW_ENGINE_REF = "fake-ocr-engine:v2"
+NEW_DIGEST = "sha256:" + "9" * 64
+
+
+def newer_engine(*texts):
+    """A second, distinguishable engine revision: different ref, different text."""
+    return FakeOcrEngine([EnginePage(text=text) for text in texts], engine_ref=NEW_ENGINE_REF)
+
+
+def work_with(tracer, job_id, engines, *, owner="executions/exec-2"):
+    return run_worker(
+        store=tracer.store,
+        engines=engines,
+        clock=tracer.clock,
+        team_id=TEAM,
+        job_id=job_id,
+        owner=owner,
+    )
+
+
+def result_text(tracer, job_id):
+    return tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json()["text"]
+
+
+def test_the_worker_runs_the_engine_the_accepted_job_was_pinned_to():
+    tracer = build()
+    job_id = submit(tracer).json()["job_id"]
+    old = tracer.engine
+    new = newer_engine("new engine page one", "new engine page two")
+    # The operator has moved the deployment to the new revision. The accepted job
+    # resolves through its own recorded ref, so the old engine runs it (§8).
+    registry = EngineRegistry({FAKE_ENGINE_REF: lambda: old, NEW_ENGINE_REF: lambda: new})
+
+    assert work_with(tracer, job_id, registry) == 0
+
+    assert result_text(tracer, job_id) == "ใบเสร็จรับเงิน\nreceipt page two"
+    assert old.calls == [1, 2]
+    assert new.calls == []
+
+
+def test_a_job_accepted_after_the_operator_change_runs_the_new_engine():
+    tracer = build()
+    # The operator's current pin is now the new revision, so the next accepted job
+    # records it - while the job above keeps the old one.
+    tracer.dispatcher.pin = WorkerPin.build(
+        engine_ref=NEW_ENGINE_REF, image=NEW_DIGEST, container_name="worker", task_timeout_s=1800
+    )
+    job_id = submit(tracer, key="new-revision-key").json()["job_id"]
+    new = newer_engine("new engine page one", "new engine page two")
+    registry = EngineRegistry({FAKE_ENGINE_REF: lambda: tracer.engine, NEW_ENGINE_REF: lambda: new})
+
+    assert work_with(tracer, job_id, registry) == 0
+
+    assert result_text(tracer, job_id) == "new engine page one\nnew engine page two"
+    assert tracer.engine.calls == []
+
+
+def test_the_worker_refuses_a_pin_it_cannot_resolve_without_writing_anything():
+    tracer = build()
+    job_id = submit(tracer).json()["job_id"]
+    before = job_objects(tracer, job_id)
+
+    # No fallback to the engine this deployment happens to be configured with.
+    unresolved = EngineRegistry({NEW_ENGINE_REF: lambda: newer_engine("x")})
+
+    assert work_with(tracer, job_id, unresolved) == 1
+
+    assert job_objects(tracer, job_id) == before
+    assert tracer.engine.calls == []
+    assert tracer.store.get_job(TEAM, job_id).state == "accepted"
+
+
+def test_the_worker_refuses_an_engine_that_declares_another_revision():
+    tracer = build()
+    job_id = submit(tracer).json()["job_id"]
+    before = job_objects(tracer, job_id)
+    # Registered under the job's ref but declaring another one: the resolved
+    # engine/config disagreement §5.5/D16 refuses, not a warning.
+    registry = EngineRegistry({FAKE_ENGINE_REF: lambda: newer_engine("other")})
+
+    assert work_with(tracer, job_id, registry) == 1
+
+    assert job_objects(tracer, job_id) == before
+    assert tracer.store.get_job(TEAM, job_id).state == "accepted"
+
+
+def test_a_checkpoint_from_another_engine_is_rejected_and_recomputed():
+    tracer = build()
+    job_id = submit(tracer).json()["job_id"]
+    # A page checkpoint written by a superseded engine sits at the job's page name:
+    # it is not a checkpoint for this pin, so the page is recomputed (§5.5, D41).
+    tracer.objects.create(
+        f"jobs/{TEAM}/{job_id}/pages/00001.json",
+        json.dumps(
+            {
+                "schema_version": "ocr.v1",
+                "job_id": job_id,
+                "page_number": 1,
+                "status": "succeeded",
+                "text_source": "ocr",
+                "text": "stale engine text",
+                "warnings": [],
+                "engine_ref": NEW_ENGINE_REF,
+            }
+        ).encode(),
+    )
+
+    assert run(tracer, job_id) == 0
+
+    assert result_text(tracer, job_id) == "ใบเสร็จรับเงิน\nreceipt page two"
+    assert tracer.engine.calls == [1, 2]
 
 
 # --- Reconciliation ----------------------------------------------------------

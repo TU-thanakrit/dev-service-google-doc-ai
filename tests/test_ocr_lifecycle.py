@@ -43,6 +43,7 @@ from app.ocr_tracer_fakes import (
     FakeTokenVerifier,
     InMemoryObjectStore,
     InMemoryOcrStore,
+    fake_engine_registry,
 )
 from app.ocr_worker import run_worker
 
@@ -101,7 +102,7 @@ def submit(tracer, *, key="lifecycle-key-0001", content=PDF_BYTES):
 def work(tracer, job_id, *, owner="executions/exec-1"):
     return run_worker(
         store=tracer.store,
-        engine=tracer.engine,
+        engines=fake_engine_registry(tracer.engine),
         clock=tracer.clock,
         team_id=TEAM,
         job_id=job_id,
@@ -371,6 +372,24 @@ def test_the_guard_is_the_later_of_expiry_and_the_attempt_bound():
     assert late.expires_at is not None
     assert cleanup_guard(late) == late.expires_at
     assert cleanup_guard(late) - late.expires_at == timedelta(0)
+
+
+def test_a_job_accepted_under_a_longer_pinned_attempt_bound_is_guarded_by_it():
+    # D43: the launch sends the job's own pinned `task_timeout_s` as its override,
+    # so a job accepted under a longer bound must be guarded by that bound, not by
+    # whatever the deployment is currently configured with - otherwise the last
+    # page write of its attempt could land after the pass started (§6.3).
+    pinned = final_record(START)
+    pinned.task_timeout_s = 3600
+    unpinned = final_record(START)
+
+    assert unpinned.task_timeout_s == 0
+    assert cleanup_guard(pinned, per_attempt_timeout=timedelta(minutes=30)) == (
+        pinned.deadline_at + timedelta(hours=1)
+    )
+    assert cleanup_guard(unpinned, per_attempt_timeout=timedelta(minutes=30)) == (
+        unpinned.deadline_at + timedelta(minutes=30)
+    )
 
 
 def test_the_cleanup_schedule_invariant_is_asserted():

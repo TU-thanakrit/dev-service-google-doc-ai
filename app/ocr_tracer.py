@@ -179,9 +179,17 @@ class OcrEngine(Protocol):
     `page_count` decodes the container for its source page count without
     recognizing anything (one page per PDF page / TIFF frame; JPEG and PNG are
     single-page, §2.6/D24). `recognize_page` recognizes one page, so a restart
-    re-issues only the pages that are not already checkpointed (§5.5). Engine and
-    model pinning per job is ticket #11, so no engine identity is recorded here.
+    re-issues only the pages that are not already checkpointed (§5.5).
+
+    `engine_ref` is the adapter's own declared identity: the operator-only name of
+    the engine, its models, and the configuration that produces the output bytes
+    (§8/D19). It is never returned to a caller; it is what the worker compares
+    with the job's recorded pin before recognizing anything, so a deployment that
+    resolves to a different engine refuses the work instead of publishing text
+    under the wrong pin (§5.5/D16).
     """
+
+    engine_ref: str
 
     def page_count(self, content: bytes, mime_type: str) -> int: ...
 
@@ -349,6 +357,9 @@ def _new_job(
     mime_type: str,
     dispatcher: Dispatcher,
 ) -> JobRecord:
+    # The whole pin of §8, copied from the operator's current settings: it is
+    # written once here and every later retry runs this record, not the setting.
+    pin = dispatcher.pin
     return JobRecord(
         job_id=claim.job_id,
         team_id=team_id,
@@ -358,8 +369,14 @@ def _new_job(
         byte_length=claim.byte_length,
         key_hash=key_hash,
         mime_type=mime_type,
-        engine_ref=dispatcher.engine_ref,
-        worker_revision_digest=dispatcher.worker_revision_digest,
+        engine_ref=pin.engine_ref,
+        worker_revision_digest=pin.worker_revision_digest,
+        worker_job_name=pin.worker_job_name,
+        worker_container_name=pin.worker_container_name,
+        worker_args=pin.worker_args,
+        worker_env=pin.worker_env,
+        task_timeout_s=pin.task_timeout_s,
+        task_max_retries=pin.task_max_retries,
     )
 
 

@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from ocr_documents import jpeg_bytes, png_bytes, tiff_bytes
 
 from app.ocr_admission import AdmissionLimits
+from app.ocr_pinning import WorkerPin
 from app.ocr_reconcile import reconcile
 from app.ocr_store import CAPACITY_NAME, MATERIALIZATION_GRACE, StorageUnavailable
 from app.ocr_tracer import (
@@ -30,6 +31,8 @@ from app.ocr_tracer import (
     run_job,
 )
 from app.ocr_tracer_fakes import (
+    FAKE_ENGINE_REF,
+    FAKE_WORKER_PIN,
     ControllableDispatcher,
     FakeOcrEngine,
     FakeTokenVerifier,
@@ -85,6 +88,8 @@ class FakeClock:
 
 class BlockingEngine:
     """Fake engine that holds one page's recognition until the test releases it."""
+
+    engine_ref = FAKE_ENGINE_REF
 
     def __init__(self) -> None:
         self.entered = threading.Event()
@@ -659,14 +664,57 @@ def test_jobs_pin_the_engine_and_worker_revision_without_exposing_them():
     tracer.dispatcher.run_pending()
 
     job = tracer.store.get_job(TEAM_ID, job_id)
-    assert (job.engine_ref, job.worker_revision_digest) == (
-        tracer.dispatcher.engine_ref,
-        tracer.dispatcher.worker_revision_digest,
-    )
+    # The whole §8 pin is recorded once, at acceptance, from the operator's
+    # settings - and none of it is a caller-visible field (D19).
+    assert WorkerPin.from_job(job) == tracer.dispatcher.pin
 
     status = tracer.client.get(f"/v1/ocr/jobs/{job_id}").json()
     result = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json()
-    assert not {"engine_ref", "worker_revision_digest"} & (status.keys() | result.keys())
+    assert not {
+        "engine_ref",
+        "worker_revision_digest",
+        "worker_job_name",
+        "worker_container_name",
+        "worker_args",
+        "worker_env",
+        "task_timeout_s",
+        "task_max_retries",
+    } & (status.keys() | result.keys())
+
+
+def test_an_operator_engine_change_reaches_new_jobs_only():
+    tracer = build_tracer()
+    accepted = submit(tracer, key="pin-key-0001").json()["job_id"]
+
+    # The operator re-points the deployment at another engine and revision. The
+    # job already accepted keeps the pin it was accepted under (§8, D43).
+    tracer.dispatcher.pin = WorkerPin.build(
+        engine_ref="fake-ocr-engine:v2",
+        image="sha256:" + "9" * 64,
+        container_name="worker",
+        task_timeout_s=600,
+    )
+    later = submit(tracer, key="pin-key-0002").json()["job_id"]
+
+    assert WorkerPin.from_job(tracer.store.get_job(TEAM_ID, accepted)) == FAKE_WORKER_PIN
+    assert WorkerPin.from_job(tracer.store.get_job(TEAM_ID, later)) == tracer.dispatcher.pin
+    assert (tracer.store.get_job(TEAM_ID, later).engine_ref) == "fake-ocr-engine:v2"
+
+
+def test_a_caller_cannot_select_an_engine_or_a_worker_revision():
+    tracer = build_tracer()
+    response = tracer.client.post(
+        "/v1/ocr/jobs",
+        headers={"Idempotency-Key": "pin-key-caller"},
+        files={"file": ("doc.pdf", PDF_BYTES, "application/pdf")},
+        # Both are pin fields an operator owns, so a submission that carries them
+        # is ignored rather than honoured (D19, §8).
+        data={"engine_ref": "fake-ocr-engine:v9", "worker_revision_digest": "sha256:" + "9" * 64},
+    )
+
+    assert response.status_code == 202
+    job = tracer.store.get_job(TEAM_ID, response.json()["job_id"])
+    assert WorkerPin.from_job(job) == tracer.dispatcher.pin
 
 
 def test_a_launch_that_is_not_acknowledged_is_still_accepted():

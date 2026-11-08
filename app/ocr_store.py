@@ -162,6 +162,15 @@ class JobRecord:
     mime_type: str
     engine_ref: str
     worker_revision_digest: str
+    # The rest of the frozen pin of §8/D43. Defaults exist so a record that is
+    # not launched (a store-only fixture) stays constructible; anything that
+    # launches validates the whole pin with `ocr_pinning.WorkerPin` first.
+    worker_job_name: str = ""
+    worker_container_name: str = ""
+    worker_args: tuple[str, ...] = ()
+    worker_env: tuple[tuple[str, str], ...] = ()
+    task_timeout_s: int = 0
+    task_max_retries: int = 0
     state: str = ACCEPTED
     pages_total: int | None = None
     pages: list[PageResult] = field(default_factory=list)
@@ -198,6 +207,23 @@ def _field(document: dict[str, Any], name: str, kind: type) -> Any:
     if not isinstance(value, kind):
         raise CorruptRecord(name)
     return value
+
+
+def _string_tuple(document: dict[str, Any], name: str) -> tuple[str, ...]:
+    value = document.get(name)
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise CorruptRecord(name)
+    return tuple(value)
+
+
+def _env_pairs(document: dict[str, Any], name: str) -> tuple[tuple[str, str], ...]:
+    value = document.get(name)
+    if not isinstance(value, list) or not all(
+        isinstance(pair, list) and len(pair) == 2 and all(isinstance(item, str) for item in pair)
+        for pair in value
+    ):
+        raise CorruptRecord(name)
+    return tuple((pair[0], pair[1]) for pair in value)
 
 
 def _job_dir(team_id: str, job_id: str) -> str:
@@ -297,6 +323,12 @@ def _encode_job(job: JobRecord) -> bytes:
             "mime_type": job.mime_type,
             "engine_ref": job.engine_ref,
             "worker_revision_digest": job.worker_revision_digest,
+            "worker_job_name": job.worker_job_name,
+            "worker_container_name": job.worker_container_name,
+            "worker_args": list(job.worker_args),
+            "worker_env": [list(pair) for pair in job.worker_env],
+            "task_timeout_s": job.task_timeout_s,
+            "task_max_retries": job.task_max_retries,
             "state": job.state,
         }
     ).encode()
@@ -315,6 +347,12 @@ def _decode_job(payload: bytes, name: str) -> JobRecord:
         mime_type=_field(document, "mime_type", str),
         engine_ref=_field(document, "engine_ref", str),
         worker_revision_digest=_field(document, "worker_revision_digest", str),
+        worker_job_name=_field(document, "worker_job_name", str),
+        worker_container_name=_field(document, "worker_container_name", str),
+        worker_args=_string_tuple(document, "worker_args"),
+        worker_env=_env_pairs(document, "worker_env"),
+        task_timeout_s=_field(document, "task_timeout_s", int),
+        task_max_retries=_field(document, "task_max_retries", int),
         state=_field(document, "state", str),
     )
 

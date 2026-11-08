@@ -30,6 +30,7 @@ from app.ocr_tracer_fakes import (
     FakeTokenVerifier,
     InMemoryObjectStore,
     InMemoryOcrStore,
+    fake_engine_registry,
 )
 from app.ocr_worker import run_worker
 
@@ -89,7 +90,7 @@ def submit(demo, *, key):
 def work(demo, job_id):
     return run_worker(
         store=demo.store,
-        engine=demo.engine,
+        engines=fake_engine_registry(demo.engine),
         clock=demo.clock,
         team_id=TEAM,
         job_id=job_id,

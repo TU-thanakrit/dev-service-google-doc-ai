@@ -88,13 +88,16 @@ One image, four commands (`app.ocr_api`, `python -m app.ocr_worker`,
 Environment (`OCR_*`): `OCR_PROJECT`, `OCR_BUCKET`, `OCR_BUCKET_PROJECT` (the
 bucket's own project; defaults to `OCR_PROJECT`), `OCR_REGION`,
 `OCR_WORKER_JOB_NAME`, `OCR_WORKER_CONTAINER_NAME`, `OCR_WORKER_REVISION_DIGEST`,
-`OCR_ENGINE_REF`, `OCR_TASK_TIMEOUT_S`, `OCR_API_AUDIENCE`, `OCR_TEAMS` (a JSON
-`email -> team_id` map), and for the worker `OCR_JOB_TEAM_ID` / `OCR_JOB_ID`
-(delivered as dispatch overrides). The dispatch override payload carries only
-container args, env, and the timeout: there is no image field, so the versioned
-job name *is* part of the pin (§8). The pre-launch template read-and-compare of
-the pin (D43) and resolving the real execution name are **not** implemented
-(ticket #11) and are deployment evidence ([B2]).
+`OCR_WORKER_ARGS`, `OCR_WORKER_ENV`, `OCR_ENGINE_REF`, `OCR_TASK_TIMEOUT_S`,
+`OCR_TASK_MAX_RETRIES`, `OCR_API_AUDIENCE`, `OCR_TEAMS` (a JSON `email -> team_id`
+map), and for the worker `OCR_JOB_TEAM_ID` / `OCR_JOB_ID` (delivered as dispatch
+overrides). The dispatch override payload carries only container args, env, and
+the timeout: there is no image field, so the versioned job name *is* part of the
+pin (§8). Those settings now form the operator's pin for **new** jobs, and every
+launch is built from the pin recorded in the job (issue #11,
+`docs/ocr-v1-pinning.md`); the pre-launch template read-and-compare of that pin
+(D43) is implemented there too. Resolving the real execution name is **not**
+implemented and remains deployment evidence ([B2]).
 
 ## Cross-project bucket
 

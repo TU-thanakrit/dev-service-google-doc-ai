@@ -14,10 +14,12 @@ text, path, or process output is ever logged** (D20).
 
 The DEV engine is the measured, provisional Tesseract `tha`+`eng` selection
 (`docs/ocr-v1-benchmark-report.md` §6); production selection stays blocked on a
-representative corpus and approved thresholds, and per-job engine pinning is
-ticket #11. Every external process is injected as a `CommandRunner`, so the
-adapter is exercised with a fake runner in tests and with the real binaries only
-in the env-gated integration test.
+representative corpus and approved thresholds. An adapter declares its own
+operator-only `engine_ref` (§8), and `EngineRegistry` is how a worker resolves the
+engine recorded in an accepted job rather than the one this deployment happens to
+be configured with (`docs/ocr-v1-pinning.md`). Every external process is injected
+as a `CommandRunner`, so the adapter is exercised with a fake runner in tests and
+with the real binaries only in the env-gated integration test.
 """
 
 from __future__ import annotations
@@ -28,14 +30,15 @@ import re
 import subprocess
 import tempfile
 import unicodedata
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from app.ocr_config import OcrServiceSettings
-from app.ocr_tracer import EnginePage, EnginePageError
+from app.ocr_pinning import PinError
+from app.ocr_tracer import EnginePage, EnginePageError, OcrEngine
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +158,7 @@ class CommandOcrEngine:
         self,
         runner: CommandRunner,
         *,
+        engine_ref: str = "",
         pdfinfo: str = "pdfinfo",
         pdftotext: str = "pdftotext",
         pdftoppm: str = "pdftoppm",
@@ -171,6 +175,7 @@ class CommandOcrEngine:
         workdir: str | Path | None = None,
     ) -> None:
         self._runner = runner
+        self.engine_ref = engine_ref
         self._pdfinfo = pdfinfo
         self._pdftotext = pdftotext
         self._pdftoppm = pdftoppm
@@ -360,19 +365,62 @@ class CommandOcrEngine:
 
 
 def build_engine(settings: OcrServiceSettings) -> CommandOcrEngine:
-    """The deployed recognition engine for one worker execution (issue #7).
+    """The recognition engine this deployment's `engine_ref` names (issue #7).
 
     Reads only the engine settings; the binary names default to `PATH`. The
-    engine identity this pins is the operator-only `engine_ref` of §8, and the
-    real per-job pin comparison is ticket #11.
+    declared `engine_ref` is the operator-only identity of §8 and is what the
+    worker matches against the job's recorded pin: a deployment whose settings
+    resolve to another configuration cannot serve a job pinned to this one, and
+    says so instead of publishing text under the wrong pin.
     """
     return CommandOcrEngine(
         SubprocessRunner(),
+        engine_ref=settings.resolved_engine_ref(),
         tesseract=settings.engine_tesseract,
         lang=settings.engine_lang,
         raster_dpi=settings.engine_raster_dpi,
         tessdata_prefix=settings.engine_tessdata_prefix,
     )
+
+
+class UnknownEngineRef(PinError):
+    """No builder is registered for an `engine_ref` (§8).
+
+    Not a transient condition and never a fallback: a job whose engine is no
+    longer registered is refused, because the only other engines available are
+    the ones this deployment happens to be configured with now.
+    """
+
+
+class EngineRegistry:
+    """The engines one deployment can still serve, keyed by `engine_ref` (§8).
+
+    Operator-wired: register every `engine_ref` a *live* job may still carry, not
+    just the current one, because an accepted job keeps the engine it was
+    accepted under for its whole lifetime (`docs/ocr-v1-pinning.md`). The worker
+    resolves through this registry using the ref stored in the job, so a job
+    accepted before an operator change keeps its own engine, and a ref with no
+    registered builder is refused rather than silently substituted.
+    """
+
+    def __init__(self, builders: Mapping[str, Callable[[], OcrEngine]]) -> None:
+        self._builders = dict(builders)
+
+    def build(self, engine_ref: str) -> OcrEngine:
+        """The engine registered for `engine_ref`, validated against its own claim."""
+        builder = self._builders.get(engine_ref)
+        if builder is None:
+            raise UnknownEngineRef(f"no engine is registered for {engine_ref}")
+        engine = builder()
+        if engine.engine_ref != engine_ref:
+            # A builder that answers with another engine is a wiring defect: D16
+            # makes the resolved engine/config disagreement a refusal, not a
+            # warning, and this is the only place the two are compared before any
+            # page is recognized.
+            raise PinError(
+                f"the engine registered for {engine_ref} declares {engine.engine_ref}"
+            )
+        return engine
 
 
 def _program(argv: Sequence[str]) -> str:
