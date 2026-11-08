@@ -5,8 +5,18 @@ beyond the values here. Deployment is blocked (docs/ocr-v1-dispatch.md), so thes
 describe the shape a deployment will use - none of them is a verified cloud fact.
 """
 
+from datetime import timedelta
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.ocr_admission import (
+    DEFAULT_CAPACITY_CEILING,
+    MAX_IMAGE_PIXELS,
+    MAX_PAGES,
+    MAX_UPLOAD_BYTES,
+    AdmissionLimits,
+)
 
 
 class OcrServiceSettings(BaseSettings):
@@ -34,7 +44,31 @@ class OcrServiceSettings(BaseSettings):
     api_audience: str = ""
     teams: dict[str, str] = Field(default_factory=dict)
 
+    # Admission and input bounds (issue #10; contract §2.3, §6.4, §10/D38/D40).
+    # DEV-safe defaults, not a capacity or throughput claim: the byte ceiling is the
+    # reviewed 20 MiB provisional value, the page limit is the longest document
+    # actually measured, and the global ceiling is the [B3]-gated placeholder.
+    # `docs/ocr-v1-admission.md` states what each number rests on.
+    max_upload_bytes: int = MAX_UPLOAD_BYTES
+    max_pages: int = MAX_PAGES
+    max_image_pixels: int = MAX_IMAGE_PIXELS
+    capacity_ceiling: int = DEFAULT_CAPACITY_CEILING
+
     # Worker role: the one job this execution was launched for, from the dispatch
     # override (contract §6.1). A worker runs exactly the job it was given.
     job_team_id: str = ""
     job_id: str = ""
+
+    def admission_limits(self) -> AdmissionLimits:
+        """This deployment's input and capacity bounds.
+
+        An admission entry self-expires at `deadline_at + per_attempt_timeout`
+        (§6.4), so that value follows the deployment's own task timeout.
+        """
+        return AdmissionLimits(
+            max_upload_bytes=self.max_upload_bytes,
+            max_pages=self.max_pages,
+            max_image_pixels=self.max_image_pixels,
+            capacity_ceiling=self.capacity_ceiling,
+            per_attempt_timeout=timedelta(seconds=self.task_timeout_s),
+        )

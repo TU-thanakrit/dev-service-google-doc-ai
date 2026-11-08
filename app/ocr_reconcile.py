@@ -47,6 +47,11 @@ def _reconcile_job(
     store: DurableOcrStore, dispatcher: Dispatcher, job: JobRecord, now
 ) -> str | None:
     if job.finalized_at is not None:
+        # A final job's admission entry belongs to nobody: the `final.json` winner
+        # already released it, and a release that could not be written is removed
+        # here by CAS. Removal cannot undercount, because a final job starts no new
+        # page work (§6.2, §6.4/D40).
+        store.release_admission(job.job_id, now=now)
         # A full-success input the finalizing worker never deleted is removed here,
         # by the same §6.3 rule: the job is final, so nothing else needs the input,
         # and a momentary failure is simply retried by the next pass. A partial or

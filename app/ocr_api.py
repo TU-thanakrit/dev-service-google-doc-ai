@@ -44,6 +44,7 @@ def build_app(settings: OcrServiceSettings, *, session) -> FastAPI:
         clock=SystemClock(),
         verifier=GoogleIdTokenVerifier(audience=settings.api_audience),
         directory=MappingTeamDirectory(settings.teams),
+        limits=settings.admission_limits(),
     )
 
 

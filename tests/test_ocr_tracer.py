@@ -15,9 +15,11 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from ocr_documents import jpeg_bytes, png_bytes, tiff_bytes
 
+from app.ocr_admission import AdmissionLimits
 from app.ocr_reconcile import reconcile
-from app.ocr_store import MATERIALIZATION_GRACE, StorageUnavailable
+from app.ocr_store import CAPACITY_NAME, MATERIALIZATION_GRACE, StorageUnavailable
 from app.ocr_tracer import (
     JOB_LIFETIME,
     SCHEMA_VERSION,
@@ -50,9 +52,15 @@ TEAM_DIRECTORY = {"analyst-a@example.com": TEAM_A, "analyst-b@example.com": TEAM
 REPO_ROOT = Path(__file__).resolve().parents[1]
 START = datetime(2026, 11, 8, 4, 31, 7, tzinfo=UTC)
 PDF_BYTES = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
-PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
-JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF"
-TIFF_BYTES = b"II*\x00\x08\x00\x00\x00"
+# Structurally whole single-page rasters: the input boundary checks the container
+# before a job exists (issue #10), so a header-only stub is no longer a document.
+PNG_BYTES = png_bytes()
+JPEG_BYTES = jpeg_bytes()
+TIFF_BYTES = tiff_bytes()
+# This module drives several independent open jobs through one store. The global
+# admission ceiling itself is exercised in tests/test_ocr_admission.py, so it is
+# raised above what these fixtures need; every other bound keeps its default.
+OPEN_JOB_LIMITS = AdmissionLimits(capacity_ceiling=8)
 EXPENSE_FIELDS = (
     "document_type",
     "needs_review",
@@ -109,6 +117,7 @@ def build_tracer(
     store=None,
     objects=None,
     acknowledge=True,
+    limits=None,
 ):
     store = store or InMemoryOcrStore(objects)
     engine = engine or FakeOcrEngine(pages)
@@ -124,6 +133,7 @@ def build_tracer(
         directory=MappingTeamDirectory(
             TEAM_DIRECTORY if directory is None else directory
         ),
+        limits=OPEN_JOB_LIMITS if limits is None else limits,
     )
     return SimpleNamespace(
         client=TestClient(
@@ -1001,7 +1011,10 @@ def test_a_failed_input_write_compensates_only_the_creators_own_records():
     failed = submit(tracer)
 
     assert_error(failed, 503, "storage_unavailable")
-    assert objects.names() == []
+    # The global admission set is not this job's record: the compensation released
+    # the entry back to empty, and the (now empty) coordination object stays, as the
+    # reviewed bucket layout has it (§5.7). Nothing of the job itself is left.
+    assert [name for name in objects.names() if name != CAPACITY_NAME] == []
 
     objects.fail_inputs = False
     retried = submit(tracer)
