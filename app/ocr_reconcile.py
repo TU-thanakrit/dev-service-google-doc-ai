@@ -9,7 +9,11 @@ Rows are evaluated in order. Reconciliation never resumes page work; it only
 dispatches, finalizes, or leaves a job for its deadline.
 
 Deferred, and named rather than silently missing: the capacity set, cleanup, and
-the missing-input/`idem`-record repairs of §6.2 belong to later tickets.
+the missing-input/`idem`-record repairs of §6.2 belong to later tickets. So does
+assembling page checkpoints on the deadline path: reconciliation has no engine,
+so it cannot know a job's page count and finalizes the deadline `failed` with no
+page list rather than claim a wrong one. Resuming and accounting for such a job
+belongs to the deadline ticket (#9).
 """
 
 from app.ocr_dispatch import Dispatcher, launch
@@ -46,6 +50,8 @@ def _reconcile_job(
     if now >= job.deadline_at:
         # At or after the deadline the job is finalized and can never be
         # `succeeded` [D42]. The deadline is the one bound that always ends a job.
+        # A worker that crossed the deadline already published its usable pages;
+        # a job reaching here has none durable the reconciler can account for.
         finalize_deadline(job, now)
         store.publish(job)
         return f"finalized:deadline_exceeded:{job.team_id}/{job.job_id}"

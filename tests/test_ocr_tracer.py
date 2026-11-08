@@ -16,12 +16,12 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from app.ocr_reconcile import reconcile
 from app.ocr_store import MATERIALIZATION_GRACE, StorageUnavailable
 from app.ocr_tracer import (
     JOB_LIFETIME,
     SCHEMA_VERSION,
     EnginePage,
-    EngineResult,
     MappingTeamDirectory,
     Principal,
     create_ocr_tracer_app,
@@ -76,18 +76,21 @@ class FakeClock:
 
 
 class BlockingEngine:
-    """Fake engine that holds recognition until the test releases it."""
+    """Fake engine that holds one page's recognition until the test releases it."""
 
     def __init__(self) -> None:
         self.entered = threading.Event()
         self.release = threading.Event()
-        self.calls: list[tuple[bytes, str]] = []
+        self.calls: list[int] = []
 
-    def recognize(self, content: bytes, mime_type: str) -> EngineResult:
-        self.calls.append((content, mime_type))
+    def page_count(self, content: bytes, mime_type: str) -> int:
+        return 1
+
+    def recognize_page(self, content: bytes, mime_type: str, page_number: int) -> EnginePage:
+        self.calls.append(page_number)
         self.entered.set()
         assert self.release.wait(timeout=5)
-        return EngineResult(pages=(EnginePage(text="blocked page"),))
+        return EnginePage(text="blocked page")
 
 
 class ExplodingStore(InMemoryOcrStore):
@@ -216,7 +219,7 @@ def test_status_polls_accepted_then_succeeded_after_manual_dispatch():
     assert after.status_code == 200
     assert after.json()["state"] == "succeeded"
     assert after.json()["progress"] == {"pages_total": 2, "pages_done": 2}
-    assert tracer.engine.calls == [(PDF_BYTES, "application/pdf")]
+    assert tracer.engine.calls == [1, 2]
 
 
 def test_status_reports_running_while_recognition_is_still_controlled():
@@ -337,7 +340,7 @@ def test_retention_clock_starts_at_finalization():
     assert body["timestamps"]["expires_at"] == "2026-11-09T07:31:07Z"
 
 
-def test_duplicate_submission_reuses_the_job_and_recognizes_once():
+def test_duplicate_submission_reuses_the_job_and_recognizes_each_page_once():
     tracer = build_tracer()
 
     first = submit(tracer)
@@ -349,7 +352,7 @@ def test_duplicate_submission_reuses_the_job_and_recognizes_once():
 
     tracer.dispatcher.run_pending()
 
-    assert len(tracer.engine.calls) == 1
+    assert len(tracer.engine.calls) == len(DEFAULT_PAGES)
     job_id = first.json()["job_id"]
     assert tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").status_code == 200
 
@@ -365,7 +368,7 @@ def test_duplicate_after_finalization_is_served_without_dispatching_again():
     assert duplicate.json()["state"] == "succeeded"
     assert tracer.dispatcher.pending == []
     tracer.dispatcher.run_pending()
-    assert len(tracer.engine.calls) == 1
+    assert len(tracer.engine.calls) == len(DEFAULT_PAGES)
 
 
 def test_same_key_with_different_content_conflicts():
@@ -675,24 +678,35 @@ def test_live_retry_returns_the_existing_status_without_dispatching_again():
     assert duplicate.status_code == 200
     assert duplicate.json() == first.json()
     # One recorded launch intent for the one logical job: the retry starts no
-    # second dispatch and rewrites no dispatch metadata.
+    # second dispatch and rewrites no dispatch metadata. Each page is recognized
+    # exactly once by the one attempt.
     assert len(tracer.dispatcher.pending) == 1
     tracer.dispatcher.run_pending()
-    assert len(tracer.engine.calls) == 1
+    assert len(tracer.engine.calls) == len(DEFAULT_PAGES)
 
 
-def test_worker_that_reaches_the_deadline_finalizes_it_without_processing():
+def test_a_worker_reaching_the_deadline_writes_nothing_and_reconcile_finalizes_it():
     tracer = build_tracer()
     job_id = submit(tracer).json()["job_id"]
     tracer.clock.advance(JOB_LIFETIME)
+    objects = tracer.store.objects
+    before = objects.names()
 
     tracer.dispatcher.run_pending()
 
+    # §5.5/D42: an attempt that starts at or after the deadline writes nothing.
+    assert objects.names() == before
+    assert tracer.engine.calls == []
+    # Access is denied at the deadline until reconciliation finalizes the job (§3.3).
+    assert tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").status_code == 410
+
+    assert reconcile(store=tracer.store, dispatcher=tracer.dispatcher, clock=tracer.clock) == [
+        f"finalized:deadline_exceeded:{TEAM_ID}/{job_id}"
+    ]
     body = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json()
     assert body["state"] == "failed"
     assert body["reason"] == "deadline_exceeded"
     assert body["page_count"] == 0
-    assert tracer.engine.calls == []
 
 
 def test_worker_crossing_the_deadline_cannot_finalize_succeeded():
@@ -858,7 +872,7 @@ def test_unfinished_job_survives_an_api_restart_and_finishes_from_stored_input()
     result = restarted.client.get(f"/v1/ocr/jobs/{job_id}/result")
     assert result.status_code == 200
     assert result.json()["text"] == "หน้าแรก\npage two"
-    assert restarted.engine.calls == [(PDF_BYTES, "application/pdf")]
+    assert restarted.engine.calls == [1, 2]
 
 
 def test_retry_after_restart_reuses_the_job_without_a_second_dispatch():

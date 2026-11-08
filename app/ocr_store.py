@@ -209,6 +209,10 @@ def _result_name(team_id: str, job_id: str, fence: int) -> str:
     return f"{_job_dir(team_id, job_id)}/result.{fence}.json"
 
 
+def _page_name(team_id: str, job_id: str, page_number: int) -> str:
+    return f"{_job_dir(team_id, job_id)}/pages/{page_number:05d}.json"
+
+
 def _encode_claim(claim: Claim) -> bytes:
     return json.dumps(
         {
@@ -335,6 +339,63 @@ def _decode_result(payload: bytes, name: str) -> tuple[int | None, list[PageResu
     if pages_total is not None and not isinstance(pages_total, int):
         raise CorruptRecord(name)
     return pages_total, pages
+
+
+def _encode_page(job: JobRecord, page: PageResult) -> bytes:
+    """One succeeded page checkpoint, carrying the pin that produced it (D41)."""
+    return json.dumps(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "job_id": job.job_id,
+            "page_number": page.page_number,
+            "status": page.status,
+            "text_source": page.text_source,
+            "text": page.text,
+            "warnings": page.warnings,
+            "engine_ref": job.engine_ref,
+        }
+    ).encode()
+
+
+def _decode_page(
+    payload: bytes, name: str, job: JobRecord, page_number: int
+) -> PageResult | None:
+    """A checkpoint accepted only if it matches the name, the pin, and the shape.
+
+    `None` means invalid, which the caller treats as absent: it may redo the page
+    and, only conditionally on the generation it read, replace the object (§5.5,
+    D41). Never raises for content, so a stale or foreign checkpoint cannot fail a
+    whole attempt.
+    """
+    try:
+        document = _decode(payload, name)
+        stored_job = _field(document, "job_id", str)
+        stored_page = _field(document, "page_number", int)
+        stored_engine = _field(document, "engine_ref", str)
+        status = _field(document, "status", str)
+        text_source = _field(document, "text_source", str)
+    except CorruptRecord:
+        return None
+    text = document.get("text")
+    warnings = document.get("warnings")
+    if (stored_job, stored_page, stored_engine, status) != (
+        job.job_id,
+        page_number,
+        job.engine_ref,
+        SUCCEEDED,
+    ):
+        return None
+    if not isinstance(text, str):
+        return None
+    if not isinstance(warnings, list) or not all(isinstance(w, str) for w in warnings):
+        return None
+    return PageResult(
+        page_number=page_number,
+        status=SUCCEEDED,
+        text_source=text_source,
+        text=text,
+        warnings=list(warnings),
+    )
 
 
 class DurableOcrStore:
@@ -584,6 +645,41 @@ class DurableOcrStore:
         if found is None:
             raise PreconditionFailed(name)
         self.objects.delete(name, found[1])
+
+    # --- page checkpoints ----------------------------------------------------
+
+    def read_page_checkpoint(self, job: JobRecord, page_number: int) -> PageResult | None:
+        """The job's valid checkpoint for one page, or `None` if absent/invalid."""
+        name = _page_name(job.team_id, job.job_id, page_number)
+        found = self.objects.read(name)
+        if found is None:
+            return None
+        return _decode_page(found[0], name, job, page_number)
+
+    def put_page_checkpoint(self, job: JobRecord, page: PageResult) -> None:
+        """Write one succeeded page create-if-absent; never replace a valid one.
+
+        A `412` means the page is already checkpointed: a valid existing object
+        wins, so a duplicate or recovering worker cannot overwrite a page that
+        already succeeded. Only an object that fails validation may be replaced,
+        conditionally on the generation just read (§5.5, D41).
+        """
+        name = _page_name(job.team_id, job.job_id, page.page_number)
+        payload = _encode_page(job, page)
+        try:
+            self.objects.create(name, payload)
+            return
+        except PreconditionFailed:
+            pass
+        found = self.objects.read(name)
+        if found is None:
+            return
+        if _decode_page(found[0], name, job, page.page_number) is not None:
+            return
+        try:
+            self.objects.replace(name, payload, found[1])
+        except PreconditionFailed:
+            pass
 
     # --- dispatch intent -----------------------------------------------------
 

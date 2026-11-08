@@ -16,24 +16,26 @@ import os
 
 from app.ocr_config import OcrServiceSettings
 from app.ocr_store import DurableOcrStore, Lease
-from app.ocr_tracer import Clock, EnginePage, EngineResult, OcrEngine, SystemClock, run_job
+from app.ocr_tracer import Clock, EnginePage, OcrEngine, SystemClock, run_job
 
 
 class FakePagesEngine:
     """Deterministic placeholder engine: page text derived from the input bytes.
 
     Content-dependent so two different documents are distinguishable without
-    invoking a real OCR model. Not a recognition quality claim of any kind.
+    invoking a real OCR model. Not a recognition quality claim of any kind. The
+    fixed page count stands in for container decoding, which belongs with the real
+    engine (ticket #7).
     """
 
-    def recognize(self, content: bytes, mime_type: str) -> EngineResult:
+    PAGE_COUNT = 2
+
+    def page_count(self, content: bytes, mime_type: str) -> int:
+        return self.PAGE_COUNT
+
+    def recognize_page(self, content: bytes, mime_type: str, page_number: int) -> EnginePage:
         digest = hashlib.sha256(content).hexdigest()[:12]
-        return EngineResult(
-            pages=(
-                EnginePage(text=f"fake-ocr:{digest}:page-1"),
-                EnginePage(text=f"fake-ocr:{digest}:page-2"),
-            )
-        )
+        return EnginePage(text=f"fake-ocr:{digest}:page-{page_number}")
 
 
 def run_worker(
@@ -51,7 +53,9 @@ def run_worker(
     writes nothing and exits non-zero [D30]. A duplicate launch that finds a live
     lease also writes nothing and exits non-zero, so two executions never both
     recognize the document (contract §5.3); the `final.json` arbiter still
-    protects the published result if they do (§5.4). Releases its lease on
+    protects the published result if they do (§5.4). Exits non-zero, too, for an
+    attempt that reached the job at or after its deadline, which writes nothing
+    and is finalized by reconciliation (§5.5, §6.2). Releases its lease on
     completion or give-up.
     """
     job = store.get_job(team_id, job_id)
@@ -61,10 +65,12 @@ def run_worker(
     if lease is None:
         return 1
     try:
-        run_job(store=store, engine=engine, clock=clock, team_id=team_id, job_id=job_id)
+        published = run_job(
+            store=store, engine=engine, clock=clock, team_id=team_id, job_id=job_id
+        )
     finally:
         store.release_lease(job, lease)
-    return 0
+    return 0 if published else 1
 
 
 def main(argv: list[str] | None = None) -> int:
