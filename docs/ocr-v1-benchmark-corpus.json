@@ -1,0 +1,238 @@
+{
+  "corpus": "ocr-bench-synthetic-v1",
+  "synthetic": true,
+  "license": "CC0-1.0 (text authored for this repository)",
+  "source": "synthetic-authored",
+  "font": "Waree",
+  "docs": [
+    {
+      "id": "th_clean",
+      "lang": "th",
+      "condition": "clean",
+      "format": "png",
+      "dpi": 300,
+      "degradations": [],
+      "pages": [
+        {
+          "page": 1,
+          "lang": "th",
+          "text_sha256": "ff8a90211271ff64f2603c749331212d4b346bc4a09d5afd8e8ea6c9c86d4bcd"
+        }
+      ],
+      "artifact": "th_clean.png",
+      "artifact_sha256": "a58dc0ce195556815de8db95b9a89f5a035b3e0b4acee8927cf4a0c3b8e16510"
+    },
+    {
+      "id": "en_clean",
+      "lang": "en",
+      "condition": "clean",
+      "format": "png",
+      "dpi": 300,
+      "degradations": [],
+      "pages": [
+        {
+          "page": 1,
+          "lang": "en",
+          "text_sha256": "4e50bcd52e10ab7a4a224669a74918e5ce0ca293822baf1dbe31ce8521fd972f"
+        }
+      ],
+      "artifact": "en_clean.png",
+      "artifact_sha256": "59c58e8e98ef9b7a3e943b5d6eb53da7b56853a45ad1a2f6d809cd1b0b20a592"
+    },
+    {
+      "id": "mixed_clean",
+      "lang": "mixed",
+      "condition": "clean",
+      "format": "png",
+      "dpi": 300,
+      "degradations": [],
+      "pages": [
+        {
+          "page": 1,
+          "lang": "mixed",
+          "text_sha256": "5508b4b439d94cf50bc3f4afc58956682c54158c3cdd48b7ee2a17d15eca92ce"
+        }
+      ],
+      "artifact": "mixed_clean.png",
+      "artifact_sha256": "eefa07ac32a757171013ba04a85bb5864740b2f38b12db89ef656e26564f8d74"
+    },
+    {
+      "id": "th_degraded",
+      "lang": "th",
+      "condition": "degraded",
+      "format": "png",
+      "dpi": 300,
+      "degradations": [
+        "blur",
+        "noise",
+        "skew"
+      ],
+      "pages": [
+        {
+          "page": 1,
+          "lang": "th",
+          "text_sha256": "ff8a90211271ff64f2603c749331212d4b346bc4a09d5afd8e8ea6c9c86d4bcd"
+        }
+      ],
+      "artifact": "th_degraded.png",
+      "artifact_sha256": "ac8fd7b6bea251395decc84aa728557b40bb72655713a4e0a6ad8a7639aca47f"
+    },
+    {
+      "id": "en_degraded",
+      "lang": "en",
+      "condition": "degraded",
+      "format": "png",
+      "dpi": 300,
+      "degradations": [
+        "blur",
+        "noise",
+        "skew"
+      ],
+      "pages": [
+        {
+          "page": 1,
+          "lang": "en",
+          "text_sha256": "4e50bcd52e10ab7a4a224669a74918e5ce0ca293822baf1dbe31ce8521fd972f"
+        }
+      ],
+      "artifact": "en_degraded.png",
+      "artifact_sha256": "22b51a9bece7b9e1917cd27758a7b9d3906b435bd639fa113541dfd638b33203"
+    },
+    {
+      "id": "mixed_degraded",
+      "lang": "mixed",
+      "condition": "degraded",
+      "format": "png",
+      "dpi": 300,
+      "degradations": [
+        "blur",
+        "noise",
+        "skew"
+      ],
+      "pages": [
+        {
+          "page": 1,
+          "lang": "mixed",
+          "text_sha256": "5508b4b439d94cf50bc3f4afc58956682c54158c3cdd48b7ee2a17d15eca92ce"
+        }
+      ],
+      "artifact": "mixed_degraded.png",
+      "artifact_sha256": "1b6a8c7ec582ff98f43abed0306f75e607dde6cddd99e3e3e56fea8022cbd805"
+    },
+    {
+      "id": "th_lowdpi",
+      "lang": "th",
+      "condition": "low_dpi",
+      "format": "png",
+      "dpi": 100,
+      "degradations": [
+        "low_dpi"
+      ],
+      "pages": [
+        {
+          "page": 1,
+          "lang": "th",
+          "text_sha256": "ff8a90211271ff64f2603c749331212d4b346bc4a09d5afd8e8ea6c9c86d4bcd"
+        }
+      ],
+      "artifact": "th_lowdpi.png",
+      "artifact_sha256": "4668bdb2acf1d1d0523602a07f09114a8f35249cefaeed7089f1524a98b4b8d3"
+    },
+    {
+      "id": "en_jpeg",
+      "lang": "en",
+      "condition": "clean",
+      "format": "jpeg",
+      "dpi": 300,
+      "degradations": [
+        "jpeg_q75"
+      ],
+      "pages": [
+        {
+          "page": 1,
+          "lang": "en",
+          "text_sha256": "4e50bcd52e10ab7a4a224669a74918e5ce0ca293822baf1dbe31ce8521fd972f"
+        }
+      ],
+      "artifact": "en_jpeg.jpeg",
+      "artifact_sha256": "c02a7895b7bdf865a10e64a9c770c794d69cdc38b63fbe14d8211341043676ff"
+    },
+    {
+      "id": "en_tiff",
+      "lang": "en",
+      "condition": "clean",
+      "format": "tiff",
+      "dpi": 300,
+      "degradations": [],
+      "pages": [
+        {
+          "page": 1,
+          "lang": "en",
+          "text_sha256": "4e50bcd52e10ab7a4a224669a74918e5ce0ca293822baf1dbe31ce8521fd972f"
+        }
+      ],
+      "artifact": "en_tiff.tiff",
+      "artifact_sha256": "a1cec8c8e7b06e46d310e4a3f302449d7f1ef5ecab953f838c5654c31de3e3ed"
+    },
+    {
+      "id": "th_bornpdf",
+      "lang": "th",
+      "condition": "born_digital",
+      "format": "pdf",
+      "dpi": 300,
+      "degradations": [],
+      "pages": [
+        {
+          "page": 1,
+          "lang": "th",
+          "text_sha256": "ff8a90211271ff64f2603c749331212d4b346bc4a09d5afd8e8ea6c9c86d4bcd"
+        }
+      ],
+      "artifact": "th_bornpdf.pdf",
+      "artifact_sha256": "724dcfea7613021047e56fd4a5488f7f0cfbe942418ea407472de5490daf74a8"
+    },
+    {
+      "id": "mixed_multipage",
+      "lang": "mixed",
+      "condition": "clean",
+      "format": "pdf",
+      "dpi": 300,
+      "degradations": [],
+      "pages": [
+        {
+          "page": 1,
+          "lang": "th",
+          "text_sha256": "ff8a90211271ff64f2603c749331212d4b346bc4a09d5afd8e8ea6c9c86d4bcd"
+        },
+        {
+          "page": 2,
+          "lang": "en",
+          "text_sha256": "4e50bcd52e10ab7a4a224669a74918e5ce0ca293822baf1dbe31ce8521fd972f"
+        },
+        {
+          "page": 3,
+          "lang": "mixed",
+          "text_sha256": "5508b4b439d94cf50bc3f4afc58956682c54158c3cdd48b7ee2a17d15eca92ce"
+        },
+        {
+          "page": 4,
+          "lang": "th",
+          "text_sha256": "ff8a90211271ff64f2603c749331212d4b346bc4a09d5afd8e8ea6c9c86d4bcd"
+        },
+        {
+          "page": 5,
+          "lang": "en",
+          "text_sha256": "4e50bcd52e10ab7a4a224669a74918e5ce0ca293822baf1dbe31ce8521fd972f"
+        }
+      ],
+      "artifact": "mixed_multipage.pdf",
+      "artifact_sha256": "e59a0e2b91b2864eec039a54a0735bd1692fa5319b0b8398f009498cadffcdba"
+    }
+  ],
+  "totals": {
+    "documents": 11,
+    "pages": 15
+  },
+  "generated_at": "2026-11-08T11:07:33+00:00",
+  "ground_truth": "authored in scripts/ocr_bench_corpus.py; per-page text_sha256 below; the text itself is NOT in this file"
+}
