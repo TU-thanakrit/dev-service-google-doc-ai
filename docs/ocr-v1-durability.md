@@ -69,10 +69,12 @@ Named so they are not mistaken for done. Worker lease/fencing, Cloud Run dispatc
 and reconciliation are now added by issue #6 (`docs/ocr-v1-dispatch.md`): a
 fenced `claim.json` lease, a `jobs:run` dispatcher adapter, and a reconcile
 entrypoint exist, but the template pin comparison, global capacity admission
-(`capacity/inflight.json`), and cleanup/deletion are still absent. Per-page
-checkpoints, bounded page retries, and partial finalization are now added by
-issue #8 (`docs/ocr-v1-recovery.md`). Retention and deletion semantics above
-describe the gate, not a cleanup job.
+(`capacity/inflight.json`) remain absent. Per-page checkpoints, bounded page
+retries, and partial finalization are now added by issue #8
+(`docs/ocr-v1-recovery.md`); deadlines, expiry, prompt input deletion, and the
+physical cleanup pass are now added by issue #9 (`docs/ocr-v1-lifecycle.md`).
+The retention semantics above describe the read gate, which denies at
+`expires_at` independently of that pass.
 
 ## Verification
 

@@ -20,6 +20,7 @@ from app.ocr_dispatch import Dispatcher, launch
 from app.ocr_store import (
     DISPATCH_ATTEMPT_CAP,
     FAILED,
+    SUCCEEDED,
     DurableOcrStore,
     JobRecord,
 )
@@ -46,12 +47,20 @@ def _reconcile_job(
     store: DurableOcrStore, dispatcher: Dispatcher, job: JobRecord, now
 ) -> str | None:
     if job.finalized_at is not None:
+        # A full-success input the finalizing worker never deleted is removed here,
+        # by the same §6.3 rule: the job is final, so nothing else needs the input,
+        # and a momentary failure is simply retried by the next pass. A partial or
+        # failed job keeps its input until cleanup.
+        if job.state == SUCCEEDED and store.delete_input_if_present(job):
+            return f"input_deleted:{job.team_id}/{job.job_id}"
         return None
     if now >= job.deadline_at:
         # At or after the deadline the job is finalized and can never be
         # `succeeded` [D42]. The deadline is the one bound that always ends a job.
         # A worker that crossed the deadline already published its usable pages;
-        # a job reaching here has none durable the reconciler can account for.
+        # a job reaching here keeps whatever its attempts checkpointed, so a page
+        # that durably succeeded is still reported rather than discarded (§6.2).
+        job.pages = store.read_page_checkpoints(job)
         finalize_deadline(job, now)
         store.publish(job)
         return f"finalized:deadline_exceeded:{job.team_id}/{job.job_id}"

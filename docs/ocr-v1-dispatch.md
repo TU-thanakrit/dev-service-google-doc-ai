@@ -68,8 +68,10 @@ applies the first matching row:
 
 `final.json` is the single arbiter, so two reconcilers (or a reconciler and a
 worker) can never produce two authoritative completions. Not implemented and
-named rather than missing: the capacity admission set (§6.4) and cleanup (§6.3)
-belong to later tickets, and reconciliation does not resume page work.
+named rather than missing: the capacity admission set (§6.4) belongs to a later
+ticket, and reconciliation does not resume page work. Cleanup (§6.3) is now
+`app/ocr_cleanup.py` (issue #9, `docs/ocr-v1-lifecycle.md`), which is the physical
+deleter; reconciliation no longer leaves it implicit.
 
 ## Container command and args
 
@@ -81,6 +83,7 @@ One image, three commands (`app.ocr_api`, `python -m app.ocr_worker`,
 | API | Service | `uvicorn app.ocr_api:app --host 0.0.0.0 --port ${PORT}` | private; needs an ID token |
 | Worker | Job `dev-ocr-service-worker-<slug>` | `python -m app.ocr_worker`, no args | the job name is the version pin; identity arrives as env overrides |
 | Reconcile | Job `dev-ocr-service-reconcile` | `python -m app.ocr_reconcile`, no args | run by Cloud Scheduler |
+| Cleanup | Job `dev-ocr-service-cleanup` | `python -m app.ocr_cleanup`, no args | physical deletion only; added by issue #9 (`docs/ocr-v1-lifecycle.md`), run by Cloud Scheduler |
 
 Environment (`OCR_*`): `OCR_PROJECT`, `OCR_BUCKET`, `OCR_BUCKET_PROJECT` (the
 bucket's own project; defaults to `OCR_PROJECT`), `OCR_REGION`,
