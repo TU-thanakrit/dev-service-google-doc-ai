@@ -96,7 +96,7 @@ class BlockingEngine:
 class ExplodingStore(InMemoryOcrStore):
     """Fake store whose reads fail, to exercise the safe error path."""
 
-    def get_job(self, team_id: str, job_id: str):
+    def get_job_meta(self, team_id: str, job_id: str):
         raise RuntimeError("gs://private-bucket/path not readable")
 
 

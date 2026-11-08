@@ -469,6 +469,38 @@ class DurableOcrStore:
             return found[1], False
 
     def get_job(self, team_id: str, job_id: str) -> JobRecord | None:
+        """One job's durable state, including its published result's pages."""
+        return self._read_job(team_id, job_id, with_result=True)
+
+    def get_job_meta(self, team_id: str, job_id: str) -> JobRecord | None:
+        """`job.json` + `final.json` + `dispatch.json`, without the result object.
+
+        The expiry gate decides from these create-once records alone, before any
+        content object is read (§3.3/D39), so a read arriving while cleanup is
+        partway through still denies instead of failing on deleted content.
+        """
+        return self._read_job(team_id, job_id, with_result=False)
+
+    def read_result(self, job: JobRecord) -> None:
+        """Load the pages of the result `final.json` names onto the record.
+
+        Only meaningful after the gate has served: inside the retention window a
+        missing published result is corruption, not expiry, and fails closed with
+        the API's 500 plus an alert (§2.2, §5.4).
+        """
+        final_name = _final_name(job.team_id, job.job_id)
+        found = self.objects.read(final_name)
+        if found is None:
+            raise CorruptRecord(final_name)
+        result_name = _field(_decode(found[0], final_name), "result_object", str)
+        result = self.objects.read(result_name)
+        if result is None:
+            raise CorruptRecord(result_name)
+        job.pages_total, job.pages = _decode_result(result[0], result_name)
+
+    def _read_job(
+        self, team_id: str, job_id: str, *, with_result: bool
+    ) -> JobRecord | None:
         name = _job_name(team_id, job_id)
         found = self.objects.read(name)
         if found is None:
@@ -479,10 +511,7 @@ class DurableOcrStore:
         final = self.objects.read(final_name)
         if final is not None:
             document = _decode(final[0], final_name)
-            result_name = _field(document, "result_object", str)
-            result = self.objects.read(result_name)
-            if result is None:
-                raise CorruptRecord(result_name)
+            _field(document, "result_object", str)
             job.state = _field(document, "state", str)
             if job.state not in FINAL_STATES:
                 raise CorruptRecord(final_name)
@@ -492,7 +521,8 @@ class DurableOcrStore:
             job.reason = reason
             job.finalized_at = _parse_iso(_field(document, "finalized_at", str))
             job.expires_at = _parse_iso(_field(document, "expires_at", str))
-            job.pages_total, job.pages = _decode_result(result[0], result_name)
+            if with_result:
+                self.read_result(job)
 
         dispatch_name = _dispatch_name(team_id, job_id)
         dispatch = self.objects.read(dispatch_name)
@@ -513,8 +543,14 @@ class DurableOcrStore:
             job.last_error_code = document.get("last_error_code")
         return job
 
-    def mark_running(self, job: JobRecord) -> None:
-        """The single permitted later CAS on `job.json`: accepted -> running."""
+    def mark_running(self, job: JobRecord, now: datetime) -> None:
+        """The single permitted later CAS on `job.json`: accepted -> running.
+
+        Refused for a job that is already final or at or past `deadline_at`, so a
+        terminated or late worker cannot make it reappear as running (§5.5, D42).
+        """
+        if now >= job.deadline_at or self.finalized(job):
+            return
         name = _job_name(job.team_id, job.job_id)
         found = self.objects.read(name)
         if found is None:
@@ -527,6 +563,14 @@ class DurableOcrStore:
             self.objects.replace(name, _encode_job(current), found[1])
         except PreconditionFailed:
             pass
+
+    def finalized(self, job: JobRecord) -> bool:
+        """Whether `final.json` exists: the arbiter's authority while it lasts.
+
+        Read at the moment of the decision, so a straggler decides from the record
+        and not from a cached copy of the job (§5.4, §5.5).
+        """
+        return self.objects.read(_final_name(job.team_id, job.job_id)) is not None
 
     def delete_job(self, job: JobRecord) -> None:
         name = _job_name(job.team_id, job.job_id)
@@ -544,14 +588,24 @@ class DurableOcrStore:
         final state.
         """
         jobs: list[JobRecord] = []
-        for name in self.objects.list_names("jobs/"):
-            parts = name.split("/")
-            if len(parts) != 4 or parts[3] != "job.json":
-                continue
-            job = self.get_job(parts[1], parts[2])
+        for team_id, job_id in self.list_job_ids():
+            job = self.get_job(team_id, job_id)
             if job is not None:
                 jobs.append(job)
         return jobs
+
+    def list_job_ids(self) -> list[tuple[str, str]]:
+        """Every `(team_id, job_id)` in the bucket, for the cleanup scan (§6.3).
+
+        Enumeration only, so the caller decides each job on its own: one record it
+        cannot read fails that job's pass instead of the whole scan.
+        """
+        ids: list[tuple[str, str]] = []
+        for name in self.objects.list_names("jobs/"):
+            parts = name.split("/")
+            if len(parts) == 4 and parts[3] == "job.json":
+                ids.append((parts[1], parts[2]))
+        return ids
 
     # --- lease ---------------------------------------------------------------
 
@@ -639,12 +693,23 @@ class DurableOcrStore:
         found = self.objects.read(_input_name(team_id, job_id))
         return None if found is None else found[0]
 
-    def delete_input(self, job: JobRecord) -> None:
+    def delete_input_if_present(self, job: JobRecord) -> bool:
+        """Delete the input when it is present; `True` means it was deleted now.
+
+        Used both for the prompt deletion after a full success and for the
+        compensation path, so it never raises for an absent object. `False` covers
+        "nothing was there" and "another actor replaced it since this read": the
+        delete is skipped, not forced, and the next pass re-decides (§6.3).
+        """
         name = _input_name(job.team_id, job.job_id)
         found = self.objects.read(name)
         if found is None:
-            raise PreconditionFailed(name)
-        self.objects.delete(name, found[1])
+            return False
+        try:
+            self.objects.delete(name, found[1])
+        except PreconditionFailed:
+            return False
+        return True
 
     # --- page checkpoints ----------------------------------------------------
 
@@ -656,14 +721,20 @@ class DurableOcrStore:
             return None
         return _decode_page(found[0], name, job, page_number)
 
-    def put_page_checkpoint(self, job: JobRecord, page: PageResult) -> None:
+    def put_page_checkpoint(self, job: JobRecord, page: PageResult, now: datetime) -> None:
         """Write one succeeded page create-if-absent; never replace a valid one.
 
         A `412` means the page is already checkpointed: a valid existing object
         wins, so a duplicate or recovering worker cannot overwrite a page that
         already succeeded. Only an object that fails validation may be replaced,
         conditionally on the generation just read (§5.5, D41).
+
+        A write at or after `deadline_at`, or after the job finalized, is refused
+        rather than stored: page work ends at the deadline and the published result
+        is never extended by a late worker (§5.5, D42).
         """
+        if now >= job.deadline_at or self.finalized(job):
+            return
         name = _page_name(job.team_id, job.job_id, page.page_number)
         payload = _encode_page(job, page)
         try:
@@ -680,6 +751,28 @@ class DurableOcrStore:
             self.objects.replace(name, payload, found[1])
         except PreconditionFailed:
             pass
+
+    def read_page_checkpoints(self, job: JobRecord) -> list[PageResult]:
+        """Every valid page checkpoint of the job, in page order (§5.5, D41).
+
+        The deadline finalization has no engine, so it can credit only the pages a
+        durable checkpoint proves; a page that failed or was never reached is not
+        inventable here and is accounted for by the attempt that ran (contract
+        §6.2, issue #9).
+        """
+        prefix = f"{_job_dir(job.team_id, job.job_id)}/pages/"
+        pages: list[PageResult] = []
+        for name in self.objects.list_names(prefix):
+            stem = name[len(prefix):]
+            if not stem.endswith(".json") or not stem[:-5].isdigit():
+                continue
+            found = self.objects.read(name)
+            if found is None:
+                continue
+            page = _decode_page(found[0], name, job, int(stem[:-5]))
+            if page is not None:
+                pages.append(page)
+        return sorted(pages, key=lambda page: page.page_number)
 
     # --- dispatch intent -----------------------------------------------------
 
@@ -797,6 +890,69 @@ class DurableOcrStore:
         ).encode()
         try:
             self.objects.create(final_name, document)
+        except PreconditionFailed:
+            return False
+        return True
+
+    # --- cleanup -------------------------------------------------------------
+
+    def purge_job(self, job: JobRecord) -> bool:
+        """Delete one job's objects in the reviewed order (D37); idempotent.
+
+        Content first — `inputs/…`, every `pages/*.json`, and every
+        `result.*.json`, including results from attempts that never won
+        `final.json` — then `claim.json`, `dispatch.json`, `final.json`, then
+        `job.json`, and the `idem` record last. Every delete is conditional on the
+        generation read, so one that loses its race is skipped rather than forced
+        and the next pass re-decides. `True` only when nothing of the job is left.
+        """
+        complete = True
+        for name in self._job_object_names(job):
+            if not self._purge(name):
+                complete = False
+        claim_gone = self._purge_claim(job)
+        return complete and claim_gone
+
+    def _job_object_names(self, job: JobRecord) -> list[str]:
+        """Every object to delete for one job, in the order §6.3 requires (D37)."""
+        job_dir = _job_dir(job.team_id, job.job_id)
+        return [
+            _input_name(job.team_id, job.job_id),
+            *self.objects.list_names(f"{job_dir}/pages/"),
+            *self.objects.list_names(f"{job_dir}/result."),
+            _lease_name(job.team_id, job.job_id),
+            _dispatch_name(job.team_id, job.job_id),
+            _final_name(job.team_id, job.job_id),
+            _job_name(job.team_id, job.job_id),
+        ]
+
+    def _purge(self, name: str) -> bool:
+        """Delete one object at the generation read; `True` when it is gone."""
+        found = self.objects.read(name)
+        if found is None:
+            return True
+        try:
+            self.objects.delete(name, found[1])
+        except PreconditionFailed:
+            return False
+        return True
+
+    def _purge_claim(self, job: JobRecord) -> bool:
+        """Delete the `idem` record only while it still names this job (D44).
+
+        A name-addressed delete would remove a *live* record a later submission
+        reused for a *new* job, losing deduplication and stranding that job. The
+        delete therefore requires both the generation read and the job id the
+        record still names; a mismatch is a skip, not a retry.
+        """
+        found = self.claim(job.team_id, job.key_hash)
+        if found is None:
+            return True
+        record, generation = found
+        if record.job_id != job.job_id:
+            return True
+        try:
+            self.delete_claim(job.team_id, job.key_hash, generation, job.job_id)
         except PreconditionFailed:
             return False
         return True
