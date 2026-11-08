@@ -20,16 +20,29 @@ from app.ocr_tracer import (
     SCHEMA_VERSION,
     EnginePage,
     EngineResult,
+    MappingTeamDirectory,
+    Principal,
     create_ocr_tracer_app,
 )
 from app.ocr_tracer_fakes import (
     ControllableDispatcher,
     FakeOcrEngine,
+    FakeTokenVerifier,
     InMemoryOcrStore,
-    StaticIdentity,
 )
 
-TEAM_ID = "team-a"
+TEAM_A = "team-a"
+TEAM_B = "team-b"
+TEAM_ID = TEAM_A
+# Fake credentials: the fake verifier accepts these exact tokens and nothing
+# else, so an invalid or expired identity is one it cannot verify (401).
+PRINCIPALS = {
+    "tok-team-a": Principal(email="analyst-a@example.com", subject="sub-team-a"),
+    "tok-team-b": Principal(email="analyst-b@example.com", subject="sub-team-b"),
+    # Verified by Google but absent from the team allowlist (403).
+    "tok-unmapped": Principal(email="outsider@example.com", subject="sub-outsider"),
+}
+TEAM_DIRECTORY = {"analyst-a@example.com": TEAM_A, "analyst-b@example.com": TEAM_B}
 REPO_ROOT = Path(__file__).resolve().parents[1]
 START = datetime(2026, 11, 8, 4, 31, 7, tzinfo=UTC)
 PDF_BYTES = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
@@ -83,10 +96,10 @@ class ExplodingStore(InMemoryOcrStore):
 def build_tracer(
     pages=DEFAULT_PAGES,
     *,
-    team_id: str | None = TEAM_ID,
+    token: str | None = "tok-team-a",
+    directory=None,
     engine=None,
     store=None,
-    identity=None,
     acknowledge=True,
 ):
     store = store or InMemoryOcrStore()
@@ -99,10 +112,19 @@ def build_tracer(
         store=store,
         dispatcher=dispatcher,
         clock=clock,
-        identity=identity or StaticIdentity(team_id),
+        verifier=FakeTokenVerifier(PRINCIPALS),
+        directory=MappingTeamDirectory(
+            TEAM_DIRECTORY if directory is None else directory
+        ),
     )
     return SimpleNamespace(
-        client=TestClient(app, raise_server_exceptions=False),
+        client=TestClient(
+            app,
+            headers={"Authorization": f"Bearer {token}"} if token else {},
+            raise_server_exceptions=False,
+        ),
+        # Unauthenticated client: identity comes only from a request credential.
+        anonymous=TestClient(app, raise_server_exceptions=False),
         store=store,
         engine=engine,
         clock=clock,
@@ -410,15 +432,102 @@ def test_unsupported_or_mismatched_media_type_is_rejected():
     assert_error(zip_archive, 415, "unsupported_media_type")
 
 
-def test_unverifiable_caller_cannot_submit():
-    tracer = build_tracer(team_id=None)
+UNKNOWN_JOB = "6d1f9b2a-0000-4000-8000-000000000000"
 
-    assert_error(submit(tracer), 401, "unauthorized_caller")
+
+def test_missing_or_invalid_credential_is_unauthorized_on_every_route():
+    tracer = build_tracer()
+
+    missing = tracer.anonymous.post(
+        "/v1/ocr/jobs",
+        headers={"Idempotency-Key": "key-no-credential"},
+        files={"file": ("doc.pdf", PDF_BYTES, "application/pdf")},
+    )
+    assert_error(missing, 401, "unauthorized_caller")
+
+    # An expired or forged token is simply one the verifier cannot verify.
+    invalid = tracer.anonymous.post(
+        "/v1/ocr/jobs",
+        headers={
+            "Idempotency-Key": "key-bad-credential",
+            "Authorization": "Bearer expired-or-forged-token",
+        },
+        files={"file": ("doc.pdf", PDF_BYTES, "application/pdf")},
+    )
+    assert_error(invalid, 401, "unauthorized_caller")
+    assert "expired-or-forged-token" not in invalid.text
+
+    assert_error(tracer.anonymous.get(f"/v1/ocr/jobs/{UNKNOWN_JOB}"), 401, "unauthorized_caller")
     assert_error(
-        tracer.client.get("/v1/ocr/jobs/6d1f9b2a-0000-4000-8000-000000000000"),
+        tracer.anonymous.get(f"/v1/ocr/jobs/{UNKNOWN_JOB}/result"),
         401,
         "unauthorized_caller",
     )
+    # A rejected credential creates nothing.
+    assert tracer.store.jobs == {}
+
+
+def test_verified_caller_without_a_team_mapping_is_forbidden():
+    tracer = build_tracer(token="tok-unmapped")
+
+    for response in (
+        submit(tracer),
+        tracer.client.get(f"/v1/ocr/jobs/{UNKNOWN_JOB}"),
+        tracer.client.get(f"/v1/ocr/jobs/{UNKNOWN_JOB}/result"),
+    ):
+        assert_error(response, 403, "team_not_authorized")
+        assert "outsider@example.com" not in response.text
+    assert tracer.store.jobs == {}
+
+
+def test_forged_identity_headers_neither_authenticate_nor_pick_a_team():
+    tracer = build_tracer()
+    forged = {
+        "X-Goog-Authenticated-User-Email": "accounts.google.com:analyst-b@example.com",
+        "X-Goog-Authenticated-User-Id": "accounts.google.com:sub-team-b",
+        "X-Forwarded-User": "analyst-b@example.com",
+        "X-Serverless-Authorization": "Bearer tok-team-b",
+        "X-Team-Id": TEAM_B,
+    }
+
+    unauthenticated = tracer.anonymous.post(
+        "/v1/ocr/jobs",
+        headers={"Idempotency-Key": "key-forged-0001", **forged},
+        files={"file": ("doc.pdf", PDF_BYTES, "application/pdf")},
+    )
+    assert_error(unauthenticated, 401, "unauthorized_caller")
+    assert tracer.store.jobs == {}
+
+    # The real credential decides ownership; forged team headers change nothing.
+    accepted = tracer.client.post(
+        "/v1/ocr/jobs",
+        headers={"Idempotency-Key": "key-forged-0002", **forged},
+        files={"file": ("doc.pdf", PDF_BYTES, "application/pdf")},
+    )
+    assert accepted.status_code == 202
+    job_id = accepted.json()["job_id"]
+    assert tracer.store.get_job(TEAM_A, job_id) is not None
+    assert tracer.store.get_job(TEAM_B, job_id) is None
+    foreign = build_tracer(store=tracer.store, token="tok-team-b")
+    assert_error(foreign.client.get(f"/v1/ocr/jobs/{job_id}"), 404, "not_found")
+
+
+def test_caller_supplied_team_identifiers_are_ignored():
+    tracer = build_tracer()
+
+    response = tracer.client.post(
+        f"/v1/ocr/jobs?team_id={TEAM_B}",
+        headers={"Idempotency-Key": "key-spoof-team"},
+        data={"team_id": TEAM_B},
+        files={"file": ("doc.pdf", PDF_BYTES, "application/pdf")},
+    )
+
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    job = tracer.store.get_job(TEAM_A, job_id)
+    assert job is not None
+    assert job.team_id == TEAM_A
+    assert tracer.store.get_job(TEAM_B, job_id) is None
 
 
 def test_unknown_job_id_is_not_found_on_both_read_routes():
@@ -429,15 +538,34 @@ def test_unknown_job_id_is_not_found_on_both_read_routes():
     assert_error(tracer.client.get(f"/v1/ocr/jobs/{unknown}/result"), 404, "not_found")
 
 
-def test_another_team_cannot_read_the_job_by_its_identifier():
+def test_another_team_cannot_read_a_guessed_job_identifier():
     store = InMemoryOcrStore()
     tracer = build_tracer(store=store)
     job_id = submit(tracer).json()["job_id"]
-    foreign = build_tracer(store=store, identity=StaticIdentity("team-b"))
+    tracer.dispatcher.run_pending()
 
-    assert_error(foreign.client.get(f"/v1/ocr/jobs/{job_id}"), 404, "not_found")
-    assert_error(foreign.client.get(f"/v1/ocr/jobs/{job_id}/result"), 404, "not_found")
+    # Same team, authorized: both read routes serve the whole lifecycle.
     assert tracer.client.get(f"/v1/ocr/jobs/{job_id}").status_code == 200
+    assert tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").status_code == 200
+
+    foreign = build_tracer(store=store, token="tok-team-b")
+    for response in (
+        foreign.client.get(f"/v1/ocr/jobs/{job_id}"),
+        foreign.client.get(f"/v1/ocr/jobs/{job_id}/result"),
+    ):
+        assert_error(response, 404, "not_found")
+        # No existence oracle, document text, or result on the refusal.
+        assert "หน้าแรก" not in response.text
+
+
+def test_idempotency_keys_are_scoped_to_the_verified_team():
+    store = InMemoryOcrStore()
+
+    first = submit(build_tracer(store=store))
+    second = submit(build_tracer(store=store, token="tok-team-b"))
+
+    assert (first.status_code, second.status_code) == (202, 202)
+    assert first.json()["job_id"] != second.json()["job_id"]
 
 
 def test_finalized_result_serves_until_its_expiry_and_is_gone_after():
