@@ -27,6 +27,7 @@ from app.ocr_engine import (
     CommandOcrEngine,
     CommandResult,
     CommandTimeout,
+    ProvisionalEngineNotApproved,
     build_engine,
 )
 from app.ocr_tracer import (
@@ -452,13 +453,73 @@ def test_an_undecodable_container_fails_the_job_as_unreadable_input():
     body = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json()
     assert body["state"] == "failed"
     assert body["reason"] == "input_unreadable"
-    # One refused page carries the engine's own closed-set code, so the caller
-    # learns why the container was refused; the document is never enumerated, so
-    # no page beyond the one refusal is invented (§2.6, §9 scenario 14).
-    assert body["page_count"] == 1
-    assert [page["error_code"] for page in body["pages"]] == ["malformed_document"]
+    # This container's page tree is invisible to the admission byte scan (no page
+    # object in the bytes) and the decoder cannot read it, so the source page
+    # count is unknown: no page record is invented and the failure is carried by
+    # state/reason alone (§2.6, §9.14).
+    assert body["page_count"] == 0
+    assert body["pages"] == []
     assert "text" not in body
 
+
+# --- deadline-scoped command bounds (review: protocol finding) ---------------
+
+
+def test_every_command_of_one_page_is_bounded_by_the_page_budget():
+    runner = pdf_ocr_runner()
+
+    # The page has no usable text layer, so the call issues pdftotext, pdftoppm,
+    # and tesseract; each must be capped by the tighter deadline-derived budget.
+    CommandOcrEngine(runner).recognize_page(PDF_BYTES, PDF, 1, timeout_s=2.5)
+
+    assert [timeout for _, timeout, _ in runner.calls] == [2.5, 2.5, 2.5]
+
+
+def test_a_page_budget_never_widens_the_configured_ceiling():
+    runner = pdf_ocr_runner()
+
+    CommandOcrEngine(runner, ocr_timeout_s=90.0).recognize_page(
+        PDF_BYTES, PDF, 1, timeout_s=600.0
+    )
+
+    # The budget is an upper bound, so the configured strict ceiling still wins.
+    assert [timeout for _, timeout, _ in runner.calls] == [30.0, 120.0, 90.0]
+
+
+def test_the_page_count_decode_is_bounded_by_its_budget():
+    runner = ScriptedRunner({"pdfinfo": lambda argv: ok(b"Pages: 2\n")})
+
+    assert CommandOcrEngine(runner).page_count(PDF_BYTES, PDF, timeout_s=1.25) == 2
+
+    assert runner.calls[0][1] == 1.25
+
+
+def test_the_provisional_engine_requires_an_explicit_dev_opt_in(monkeypatch):
+    monkeypatch.delenv("OCR_ALLOW_PROVISIONAL_ENGINE", raising=False)
+    settings = OcrServiceSettings(project="thaiunion-ai-platform", bucket="b")
+
+    assert settings.allow_provisional_engine is False
+    # No deployed worker may build the measured-but-unapproved Tesseract selection
+    # by default: an explicit dev opt-in is required (D5, benchmark report §6).
+    with pytest.raises(ProvisionalEngineNotApproved):
+        build_engine(settings)
+
+
+def test_the_dev_opt_in_allows_building_the_provisional_engine(monkeypatch):
+    monkeypatch.setenv("OCR_ALLOW_PROVISIONAL_ENGINE", "true")
+    settings = OcrServiceSettings(project="thaiunion-ai-platform", bucket="b")
+
+    assert settings.allow_provisional_engine is True
+    assert isinstance(build_engine(settings), CommandOcrEngine)
+
+
+def test_the_dev_opt_in_is_documented_where_operators_look():
+    repo_root = Path(__file__).resolve().parents[1]
+    env_example = (repo_root / ".env.example").read_text(encoding="utf-8")
+    adapter_doc = (repo_root / "docs/ocr-v1-engine-adapter.md").read_text(encoding="utf-8")
+
+    assert "OCR_ALLOW_PROVISIONAL_ENGINE" in env_example
+    assert "OCR_ALLOW_PROVISIONAL_ENGINE" in adapter_doc
 
 # --- configuration surface ---------------------------------------------------
 
@@ -487,6 +548,8 @@ def test_engine_configuration_is_read_from_the_ocr_environment(monkeypatch):
     monkeypatch.setenv("OCR_ENGINE_TESSERACT", "/opt/tesseract")
     monkeypatch.setenv("OCR_ENGINE_TESSDATA_PREFIX", "/opt/tessdata")
     monkeypatch.setenv("OCR_ENGINE_RASTER_DPI", "200")
+    # The provisional DEV engine is only buildable under the explicit opt-in.
+    monkeypatch.setenv("OCR_ALLOW_PROVISIONAL_ENGINE", "true")
 
     settings = OcrServiceSettings()
     assert (settings.engine_lang, settings.engine_tesseract) == ("tha", "/opt/tesseract")

@@ -44,9 +44,11 @@ engine is fault-injectable: one scripted outcome per page (an `EnginePage`, an
 per-call list when a retry needs scripting.
 
 `page_count` stands in for container decoding, which belongs with the real engine
-(ticket #7); the per-page timing model (`page_timeout`, gave-up-at-deadline calls
-issued with a client-side timeout) belongs with the real engine and its pin
-(ticket #11).
+(ticket #7). The per-page timing model (`page_timeout`, gave-up-at-deadline calls
+issued with a client-side timeout) is implemented (ticket #11): `page_count` and
+`recognize_page` take a `timeout_s` derived from the job deadline and the live lease
+window, and a call that returns past its window contributes no page and is not
+checkpointed. The numeric `page_timeout` value itself stays benchmark-gated ([B3]).
 
 ## Reviewed page-error categories and bounded retry
 
@@ -64,8 +66,9 @@ retryable, so an engine cannot widen the bound.
 
 **Shortcut:** between-attempt backoff is not implemented. A backoff value is a
 benchmark-gated number [B3] and this slice adds no new limit; the fake engine is
-instantaneous, and real spacing belongs with the per-page timeout in ticket #11.
-Cross-attempt recovery is a new attempt (a crash or a platform retry), not a sleep.
+instantaneous, and real spacing would belong with the per-page timeout, which is
+now implemented (#11) but still carries no approved value ([B3]). Cross-attempt
+recovery is a new attempt (a crash or a platform retry), not a sleep.
 
 ## Finalization (complete / partial / failed)
 
@@ -110,10 +113,14 @@ the real engine, or its per-page timeout ([B1], [B3]).
 ## Not implemented in this slice
 
 Named so they are not mistaken for done: real container decoding and embedded-PDF
-text (#7); per-page timeout and lease-heartbeat renewal (#11); numeric limits such
-as `page_timeout` and any backoff ([B3]); cleanup and expiry (#9, now in
-`docs/ocr-v1-lifecycle.md`: reconciliation credits durable page checkpoints on its
-deadline path, the read gate denies at `expires_at` even mid-cleanup, full-success
-inputs are deleted at once, and the physical deletion pass is `app/ocr_cleanup.py`).
-Reconciliation still does not resume page work. Engine and worker pin enforcement
-(#11) is now merged and stated in `docs/ocr-v1-pinning.md`.
+text (#7); numeric limits such as `page_timeout` and any backoff ([B3]); cleanup
+and expiry (#9, now in `docs/ocr-v1-lifecycle.md`: reconciliation credits durable
+page checkpoints on its deadline path, the read gate denies at `expires_at` even
+mid-cleanup, full-success inputs are deleted at once, and the physical deletion
+pass is `app/ocr_cleanup.py`). Reconciliation still does not resume page work.
+Engine and worker pin enforcement (#11) is now merged and stated in
+`docs/ocr-v1-pinning.md`, and the deadline-scoped page timeout and the
+lease-heartbeat renewal that also carry the #11 label are implemented
+(`app/ocr_tracer.run_job`, `app/ocr_store.renew_lease`, and the adapter's
+per-command bound); their single-object CAS read-then-act limit is stated in
+`docs/ocr-v1-dispatch.md`.

@@ -129,7 +129,7 @@ def verify_result_body(payload) -> list[str]:
     succeeded_texts = [
         page["text"]
         for page, status in zip(pages, statuses, strict=True)
-        if status == "succeeded"
+        if status == "succeeded" and isinstance(page, dict) and isinstance(page.get("text"), str)
     ]
     if succeeded_texts:
         expected_text = "\n".join(succeeded_texts)
@@ -140,6 +140,9 @@ def verify_result_body(payload) -> list[str]:
 
     expected_warnings: list[str] = []
     for page in pages:
+        if not isinstance(page, dict):
+            # Already reported by `_verify_page`; nothing to union from it.
+            continue
         for warning in page.get("warnings") or []:
             if warning not in expected_warnings:
                 expected_warnings.append(warning)

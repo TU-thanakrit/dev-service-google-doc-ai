@@ -79,7 +79,7 @@ class CountingEngine(FakeOcrEngine):
         super().__init__([EnginePage(text="page") for _ in range(total)])
         self._total = total
 
-    def page_count(self, content: bytes, mime_type: str) -> int:
+    def page_count(self, content: bytes, mime_type: str, *, timeout_s: float | None = None) -> int:
         return self._total
 
 
@@ -89,8 +89,18 @@ class UndecodableEngine(FakeOcrEngine):
     def __init__(self) -> None:
         super().__init__([EnginePage(text="page")])
 
-    def page_count(self, content: bytes, mime_type: str) -> int:
+    def page_count(self, content: bytes, mime_type: str, *, timeout_s: float | None = None) -> int:
         raise RuntimeError("decoder rejected the container")
+
+
+class ArbitraryRefusalEngine(FakeOcrEngine):
+    """Engine refusing the container with a code outside the closed vocabulary."""
+
+    def __init__(self) -> None:
+        super().__init__([EnginePage(text="page")])
+
+    def page_count(self, content: bytes, mime_type: str, *, timeout_s: float | None = None) -> int:
+        raise EnginePageError("engine_internals/bucket-name")
 
 
 def build(*, limits=None, store=None, objects=None, engine=None, token="tok-team-a"):
@@ -343,7 +353,30 @@ def test_the_worker_refuses_a_container_over_the_page_limit_without_recognizing_
 
     body = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json()
     assert (body["state"], body["reason"]) == ("failed", "input_unreadable")
-    assert [page["error_code"] for page in body["pages"]] == ["too_many_pages"]
+    # The decoder's count is known, so every source page is accounted for with the
+    # bound's own code rather than one invented refusal entry (§2.6).
+    assert body["page_count"] == MAX_PAGES + 3
+    assert [page["page_number"] for page in body["pages"]] == list(range(1, MAX_PAGES + 4))
+    assert [page["error_code"] for page in body["pages"]] == ["too_many_pages"] * (
+        MAX_PAGES + 3
+    )
+    assert engine.calls == []
+
+
+def test_a_decoding_failure_accounts_for_every_known_source_page():
+    engine = UndecodableEngine()
+    tracer = build(engine=engine)
+    # The admission byte scan sees both page objects, so the source page count is
+    # known before the worker runs: the refusal must publish one entry per page.
+    job_id = submit(tracer, content=pdf_bytes(pages=2)).json()["job_id"]
+
+    tracer.dispatcher.run_pending()
+
+    body = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json()
+    assert (body["state"], body["reason"]) == ("failed", "input_unreadable")
+    assert body["page_count"] == 2
+    assert [page["page_number"] for page in body["pages"]] == [1, 2]
+    assert [page["error_code"] for page in body["pages"]] == ["malformed_document"] * 2
     assert engine.calls == []
 
 
@@ -358,6 +391,22 @@ def test_a_container_the_worker_cannot_decode_is_reported_instead_of_crashing():
     assert (body["state"], body["reason"]) == ("failed", "input_unreadable")
     assert [page["error_code"] for page in body["pages"]] == ["malformed_document"]
     assert engine.calls == []
+
+
+def test_a_refusal_code_outside_the_closed_vocabulary_is_never_published():
+    engine = ArbitraryRefusalEngine()
+    tracer = build(engine=engine)
+    job_id = submit(tracer).json()["job_id"]
+
+    tracer.dispatcher.run_pending()
+
+    response = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result")
+    body = response.json()
+    # The engine's own code is untrusted input: an unknown one becomes the safe
+    # page category, and the refusal still accounts for the admission page count.
+    assert (body["state"], body["reason"]) == ("failed", "engine_unavailable")
+    assert [page["error_code"] for page in body["pages"]] == ["page_engine_error"]
+    assert "engine_internals" not in response.text
 
 
 # --- global capacity: one serialized admission set (contract §6.4/D40) ----------

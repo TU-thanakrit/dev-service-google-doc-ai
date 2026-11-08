@@ -75,7 +75,12 @@ def poll_until_final(
         statuses.append(response.status_code)
         if response.status_code != 200:
             return None, statuses, f"status route returned HTTP {response.status_code}"
-        body = response.json()
+        try:
+            body = response.json()
+        except ValueError:
+            return None, statuses, "status route returned a non-JSON body"
+        if not isinstance(body, dict):
+            return None, statuses, "status route returned a non-object body"
         if body.get("state") in FINAL_STATES:
             return body, statuses, None
         # The service's own hint beats the default interval, bounded by the caller's.
@@ -107,7 +112,8 @@ def verify_document(
         result["response"] = _body(submission, include_responses)
         return result
 
-    job_id = submission.json().get("job_id", "")
+    submission_payload = _json_body(submission)
+    job_id = submission_payload.get("job_id", "") if isinstance(submission_payload, dict) else ""
     status, statuses, poll_error = poll_until_final(
         client, base_url, job_id, timeout_s=poll_timeout_s, interval_s=poll_interval_s
     )
@@ -123,30 +129,73 @@ def verify_document(
         result["response"] = _body(retrieval, include_responses)
         return result
 
-    payload = retrieval.json()
+    payload = _json_body(retrieval)
     result["errors"] = verify_result_body(payload)
     # A retried submission inside the record's lifetime must return the same job.
     retry = submit(client, base_url, path, idempotency_key=key)
+    retry_payload = _json_body(retry)
     result["retry_status"] = retry.status_code
-    if retry.status_code != 200 or retry.json().get("job_id") != job_id:
+    if retry.status_code != 200 or not (
+        isinstance(retry_payload, dict) and retry_payload.get("job_id") == job_id
+    ):
         result["errors"].append(
             f"an idempotent resubmission returned HTTP {retry.status_code}"
         )
-    result["response"] = payload if include_responses else summarize_result_body(payload)
+    if include_responses and isinstance(payload, dict):
+        result["response"] = payload
+    elif isinstance(payload, dict):
+        result["response"] = summarize_result_body(payload)
+    else:
+        # A non-object result body is a verification failure, not a payload to
+        # copy: record its type, status, and length only.
+        result["response"] = _body(retrieval, include_responses=False)
     return result
 
 
+def _json_body(response: httpx.Response):
+    """The parsed body, or `None` when it is not JSON."""
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
 def _body(response: httpx.Response, include_responses: bool) -> dict:
+    """A safe view of a response body.
+
+    A response body is untrusted input: a non-object JSON value or a non-JSON
+    body may carry document text, a stack trace, or an internal path. The default
+    report therefore records only the status, the declared content type, the
+    parsed body's type, and its length, plus the contract's own error code when
+    one is present. Raw text is never copied; full bodies require the explicit
+    `--include-responses` evidence flag and only for a JSON object.
+    """
+    parsed = True
     try:
         payload = response.json()
     except ValueError:
-        return {"raw_response": response.text[:200]}
-    if include_responses or not isinstance(payload, dict):
+        parsed, payload = False, None
+    if isinstance(payload, dict):
+        body_type = "object"
+    elif isinstance(payload, list):
+        body_type = "array"
+    elif parsed:
+        body_type = "scalar"
+    else:
+        body_type = "not_json"
+    if include_responses and isinstance(payload, dict):
         return payload
-    return {
-        "schema_version": payload.get("schema_version"),
-        "error": (payload.get("error") or {}).get("code"),
+    safe: dict = {
+        "status": response.status_code,
+        "content_type": response.headers.get("content-type", ""),
+        "body_type": body_type,
+        "body_length": len(response.content),
     }
+    if isinstance(payload, dict):
+        safe["schema_version"] = payload.get("schema_version")
+        error = payload.get("error")
+        safe["error"] = error.get("code") if isinstance(error, dict) else None
+    return safe
 
 
 def main() -> int:

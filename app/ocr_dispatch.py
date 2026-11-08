@@ -36,6 +36,13 @@ from app.ocr_store import DurableOcrStore, JobRecord
 
 CLOUD_RUN_API = "https://run.googleapis.com/v2"
 
+# The worker reads the one job it was launched for from its environment (contract
+# §6.1 step 2, `app/ocr_worker.py`). These are injected per launch from the
+# accepted record, never taken from the pin or the template.
+JOB_TEAM_ENV = "OCR_JOB_TEAM_ID"
+JOB_ID_ENV = "OCR_JOB_ID"
+JOB_ENV_NAMES = frozenset({JOB_TEAM_ENV, JOB_ID_ENV})
+
 # A launch that a retry cannot fix (§6.1 step 5): missing or forbidden job, or any
 # pin mismatch of step 2.
 NON_RETRYABLE_STATUS = (403, 404)
@@ -142,9 +149,7 @@ class CloudRunJobsDispatcher:
                     {
                         "name": pin.worker_container_name,
                         "args": list(pin.worker_args),
-                        "env": [
-                            {"name": name, "value": value} for name, value in pin.worker_env
-                        ],
+                        "env": _launch_env(pin, job),
                     }
                 ],
                 "taskCount": 1,
@@ -221,6 +226,23 @@ class CloudRunJobTemplateGuard:
             document = None
         if not _template_matches(document, pin):
             raise LaunchNotRetryable()
+
+
+def _launch_env(pin: WorkerPin, job: JobRecord) -> list[dict[str, str]]:
+    """The override env: the pinned pairs, then this job's own identifiers.
+
+    A pinned env entry never decides which job runs: any pinned value for the two
+    identifier names is dropped and the accepted record's values are appended, so
+    a stale pin cannot point an execution at another job (§6.1).
+    """
+    environment = [
+        {"name": name, "value": value}
+        for name, value in pin.worker_env
+        if name not in JOB_ENV_NAMES
+    ]
+    environment.append({"name": JOB_TEAM_ENV, "value": job.team_id})
+    environment.append({"name": JOB_ID_ENV, "value": job.job_id})
+    return environment
 
 
 def _template_matches(document: Any, pin: WorkerPin) -> bool:

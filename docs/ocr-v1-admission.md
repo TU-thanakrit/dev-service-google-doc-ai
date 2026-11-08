@@ -86,12 +86,18 @@ ceiling is inside the platform request ceiling (D38), each limit is positive, an
   reported as `413 file_too_large` (an over-limit input) instead of inventing a code
   that §2.7/§11.1 would reject. A contract revision could add one; this slice does
   not.
-- **`422 too_many_pages` on the worker path publishes one failed page, not one per
-  source page.** §2.6's per-source-page accounting cannot be produced for a document
-  the application refuses to decode, and enumerating its pages is exactly what must
-  not happen. The job is `failed`/`input_unreadable`, the page carries `too_many_pages`
-  (or `malformed_document` when the container could not be decoded at all), and the
-  published `pages_total` is `null` when the count is unknown.
+- **A refused container is accounted for from the page count the admission byte
+  scan persisted.** A document the deployment will not process (over the page
+  bound, or undecodable) publishes one failed entry per *known* source page with
+  the refusal's closed-set code, so `page_count` matches the page list. The count
+  is the decoder's when it reports one and the admission scan's otherwise; when
+  neither can see the page tree (a PDF page tree inside an object stream that the
+  decoder then rejects) the count stays unknown, no page is invented, and the
+  result is `page_count: 0` with the failure carried by `state`/`reason`. The
+  count is written once into `job.json` at acceptance (`pages_total`), and a
+  decoder reporting more than the contract's provisional 500-page ceiling is
+  bounded to 500 records rather than that count: a refused document is never
+  enumerated.
 - **One refusal shape covers both the page bound and an undecodable container.** The
   page carries the code of the bound that fired, or — when the real engine (issue #7)
   refuses the bytes itself — the engine's own §2.7 page code (`malformed_document`, or

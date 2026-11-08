@@ -297,10 +297,17 @@ class BlockingPageEngine:
         self.release = threading.Event()
         self.calls: list[int] = []
 
-    def page_count(self, content: bytes, mime_type: str) -> int:
+    def page_count(self, content: bytes, mime_type: str, *, timeout_s: float | None = None) -> int:
         return 3
 
-    def recognize_page(self, content: bytes, mime_type: str, page_number: int) -> EnginePage:
+    def recognize_page(
+        self,
+        content: bytes,
+        mime_type: str,
+        page_number: int,
+        *,
+        timeout_s: float | None = None,
+    ) -> EnginePage:
         self.calls.append(page_number)
         if page_number == 1:
             return EnginePage(text="page one")

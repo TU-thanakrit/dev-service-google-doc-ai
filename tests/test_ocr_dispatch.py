@@ -203,6 +203,33 @@ def test_a_launch_reads_the_template_and_posts_the_recorded_pins_override_body()
     assert "600s" != session.requests[1]["json"]["overrides"]["timeout"]
 
 
+def test_the_launch_injects_the_accepted_jobs_own_identifiers():
+    # The worker is told which job to run by its environment, so the launch must
+    # inject this job's identifiers; a pin that carries stale ones (or none) can
+    # never make an execution process another job.
+    stale_pin = WorkerPin.build(
+        engine_ref="engine-v1",
+        image=DIGEST_V1,
+        container_name="worker",
+        env=(("OCR_JOB_TEAM_ID", "team-other"), ("OCR_JOB_ID", "job-other")),
+        task_timeout_s=1800,
+    )
+    session = FakeSession(
+        [
+            FakeResponse(200, template_body(stale_pin)),
+            FakeResponse(200, {"name": "operations/abc"}),
+        ]
+    )
+
+    assert build_dispatcher(session).dispatch(sample_job(stale_pin)) == "operations/abc"
+
+    overrides = session.requests[1]["json"]["overrides"]["containerOverrides"][0]
+    assert overrides["env"] == [
+        {"name": "OCR_JOB_TEAM_ID", "value": TEAM},
+        {"name": "OCR_JOB_ID", "value": "job-0001"},
+    ]
+
+
 @pytest.mark.parametrize(
     "drift",
     [

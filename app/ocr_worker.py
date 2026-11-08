@@ -73,6 +73,7 @@ def run_worker(
             team_id=team_id,
             job_id=job_id,
             limits=limits,
+            lease=lease,
         )
     finally:
         store.release_lease(job, lease)

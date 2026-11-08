@@ -25,10 +25,12 @@ from app.ocr_tracer import (
     JOB_LIFETIME,
     SCHEMA_VERSION,
     EnginePage,
+    EnginePageError,
     MappingTeamDirectory,
     Principal,
     create_ocr_tracer_app,
     run_job,
+    safe_error_code,
 )
 from app.ocr_tracer_fakes import (
     FAKE_ENGINE_REF,
@@ -96,10 +98,17 @@ class BlockingEngine:
         self.release = threading.Event()
         self.calls: list[int] = []
 
-    def page_count(self, content: bytes, mime_type: str) -> int:
+    def page_count(self, content: bytes, mime_type: str, *, timeout_s: float | None = None) -> int:
         return 1
 
-    def recognize_page(self, content: bytes, mime_type: str, page_number: int) -> EnginePage:
+    def recognize_page(
+        self,
+        content: bytes,
+        mime_type: str,
+        page_number: int,
+        *,
+        timeout_s: float | None = None,
+    ) -> EnginePage:
         self.calls.append(page_number)
         self.entered.set()
         assert self.release.wait(timeout=5)
@@ -1092,4 +1101,50 @@ def test_a_launch_acknowledgment_is_not_ocr_completion():
     result = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result")
     assert result.status_code == 200
     assert result.json()["state"] == "succeeded"
+
+
+# --- The published code vocabulary is closed (review: standards finding) -------
+
+
+def test_an_engine_page_code_outside_the_closed_vocabulary_is_mapped_safely():
+    # An engine can raise any string it likes; only the contract's closed page
+    # vocabulary may be published, so an arbitrary code must not reach a caller.
+    tracer = build_tracer(
+        pages=[EnginePage(text="ok"), EnginePageError("engine_internals/bucket-name")]
+    )
+    job_id = submit(tracer).json()["job_id"]
+
+    tracer.dispatcher.run_pending()
+
+    response = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result")
+    body = response.json()
+    assert [page["error_code"] for page in body["pages"]] == [None, "page_engine_error"]
+    assert (body["state"], body["reason"]) == ("partially_succeeded", "engine_unavailable")
+    assert "engine_internals" not in response.text
+
+
+def test_an_error_body_code_outside_the_vocabulary_renders_as_internal_error():
+    # `_error` indexes the allowlisted messages, so an unvetted code must not be
+    # able to crash the handler or reach a caller: it becomes `internal_error`.
+    assert safe_error_code("not_a_contract_code") == "internal_error"
+    assert safe_error_code("file_too_large") == "file_too_large"
+
+
+def test_a_job_reason_never_carries_an_engine_supplied_code():
+    # The reason is derived from the closed reason set, never copied from the
+    # engine's exception, so a refusal cannot widen the published vocabulary.
+    tracer = build_tracer(pages=[EnginePageError("totally_made_up")])
+    job_id = submit(tracer).json()["job_id"]
+
+    tracer.dispatcher.run_pending()
+
+    response = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result")
+    body = response.json()
+    assert body["reason"] in {
+        "deadline_exceeded",
+        "engine_unavailable",
+        "input_unreadable",
+        "internal_error",
+    }
+    assert "totally_made_up" not in response.text
 

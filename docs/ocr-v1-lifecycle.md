@@ -174,10 +174,13 @@ cleanup job, or its scheduler ([B1], [B3], [B4]).
 
 ## Not implemented in this slice
 
-Named so they are not mistaken for done: the capacity admission set (§6.4) and its
-B6 residual; numeric limits other than the provisional D21/D32 pair ([B3]); the
-Cloud Scheduler triggers themselves, the bucket policy read-back, and the alert
-channels ([B2], [B4]); lease-heartbeat renewal (#11); and resuming page work from
-reconciliation, which this slice deliberately does not do. The D43 pre-launch
-template comparison and real engine/worker pinning (#11) are now merged and stated
-in `docs/ocr-v1-pinning.md`.
+Named so they are not mistaken for done: the capacity admission set's B6 residual
+(§6.4; the set itself is now added by issue #10, `docs/ocr-v1-admission.md`);
+numeric limits other than the provisional D21/D32 pair ([B3]); the Cloud Scheduler
+triggers themselves, the bucket policy read-back, and the alert channels ([B2],
+[B4]); and resuming page work from reconciliation, which this slice deliberately
+does not do. The D43 pre-launch template comparison and real engine/worker pinning
+(#11) are now merged and stated in `docs/ocr-v1-pinning.md`, and the lease-heartbeat
+renewal (#11) is implemented by the worker (`app/ocr_store.renew_lease`), so a lease
+a pass enumerates is one a crash left behind; its CAS read-then-act limit is stated
+in `docs/ocr-v1-dispatch.md`.

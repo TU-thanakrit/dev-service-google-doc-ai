@@ -83,6 +83,11 @@ class OcrServiceSettings(BaseSettings):
     # set it when the engine has an identity of its own (a model id or version).
     engine_ref: str = ""
 
+    # The DEV engine is the measured-but-unapproved Tesseract selection, so a
+    # deployed worker builds it only under an explicit operator opt-in. Default
+    # false: an approval cannot be inherited by deploying.
+    allow_provisional_engine: bool = False
+
     def resolved_engine_ref(self) -> str:
         """The engine identity for new jobs (§8, D19).
 

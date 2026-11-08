@@ -64,6 +64,20 @@ class AdmissionLimits:
     per_attempt_timeout: timedelta = PER_ATTEMPT_TIMEOUT
 
 
+@dataclass(frozen=True, slots=True)
+class AdmittedDocument:
+    """A submission the input boundary accepted: its container and its page count.
+
+    `page_count` is what the byte scan could actually see, or `None` when it could
+    not (a PDF page tree inside an object stream is invisible here). It is
+    persisted with the job so a worker that refuses the container can still
+    account for one page per known source page instead of inventing a count.
+    """
+
+    mime_type: str
+    page_count: int | None
+
+
 class InputRejected(Exception):
     """A submission refused on its bytes; rendered as the allowlisted error body."""
 
@@ -120,8 +134,10 @@ def sniff_container(content: bytes) -> str | None:
     return None
 
 
-def validate_document(content: bytes, declared_type: str, limits: AdmissionLimits) -> str:
-    """Check one submission's bytes; return the sniffed type or raise `InputRejected`.
+def validate_document(
+    content: bytes, declared_type: str, limits: AdmissionLimits
+) -> AdmittedDocument:
+    """Check one submission's bytes; return its container and known page count.
 
     Order follows contract §2.3 — empty, container/mismatch, byte length, page or
     frame count, encryption, structural damage — so an input that breaks two rules
@@ -147,7 +163,9 @@ def validate_document(content: bytes, declared_type: str, limits: AdmissionLimit
         # raster is reported as the over-limit input it is rather than by
         # inventing a code that §11.1 would otherwise reject.
         raise InputRejected(413, "file_too_large")
-    return mime_type
+    # Zero visible pages means "the byte scan cannot see the page tree", never
+    # "this document has no pages": the count stays unknown rather than wrong.
+    return AdmittedDocument(mime_type, structure.pages or None)
 
 
 # --- structural readers (bytes only; no decoding, no rendering) ------------------

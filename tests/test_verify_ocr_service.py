@@ -180,4 +180,62 @@ def test_a_rejected_submission_reports_the_error_code_without_the_body(tmp_path)
 
     assert report["submitted"] == 413
     assert any("HTTP 413" in error for error in report["errors"])
-    assert report["response"] == {"schema_version": "ocr.v1", "error": "file_too_large"}
+    expected = httpx.Response(
+        413,
+        json={
+            "schema_version": "ocr.v1",
+            "error": {"code": "file_too_large", "message": "file exceeds the size limit"},
+        },
+    )
+    assert report["response"] == {
+        "status": 413,
+        "content_type": "application/json",
+        "body_type": "object",
+        "body_length": len(expected.content),
+        "schema_version": "ocr.v1",
+        "error": "file_too_large",
+    }
+
+
+def test_a_non_object_json_body_is_reported_as_metadata_only(tmp_path):
+    (tmp_path / "doc.pdf").write_bytes(b"%PDF-1.7\n")
+    # An array is not the contract's body, and its contents may be arbitrary:
+    # the default report records its type and size, never the payload.
+    scripted = Scripted(result=["recognized text", {"secret": "CONFIDENTIAL"}])
+
+    report = verify(scripted, tmp_path)
+
+    assert report["errors"] == ["result body is not a JSON object"]
+    assert report["response"] == {
+        "status": 200,
+        "content_type": "application/json",
+        "body_type": "array",
+        "body_length": len(httpx.Response(200, json=scripted.result).content),
+    }
+    assert "recognized text" not in json.dumps(report)
+    assert "CONFIDENTIAL" not in json.dumps(report)
+
+
+def test_a_non_json_body_is_never_copied_into_the_report(tmp_path):
+    (tmp_path / "doc.pdf").write_bytes(b"%PDF-1.7\n")
+    secret = "Traceback /home/danny/private/path token=abc"
+
+    def handler(request):
+        return httpx.Response(500, text=secret)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        report = verify_document(
+            client,
+            "https://service.example",
+            tmp_path / "doc.pdf",
+            poll_timeout_s=5.0,
+            poll_interval_s=0.01,
+            include_responses=False,
+        )
+
+    assert report["submitted"] == 500
+    assert report["response"]["status"] == 500
+    assert report["response"]["body_type"] == "not_json"
+    assert report["response"]["body_length"] == len(secret.encode())
+    assert "private/path" not in json.dumps(report)
+    assert "token=abc" not in json.dumps(report)

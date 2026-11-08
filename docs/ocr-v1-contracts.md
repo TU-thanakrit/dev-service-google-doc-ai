@@ -609,8 +609,13 @@ capacity/inflight.json                      # the admission set (§6.4)
 ```
 
 Created `job.json` holds `{schema_version, job_id, team_id, accepted_at, deadline_at, content_hash,
-byte_length, idempotency_key_hash, engine_ref, worker_job_name, worker_revision_digest, task_timeout_s,
-task_max_retries, worker_container_name, worker_args, worker_env}` [D43]; the only later CAS update
+byte_length, idempotency_key_hash, mime_type, engine_ref, worker_job_name, worker_revision_digest,
+task_timeout_s, task_max_retries, worker_container_name, worker_args, worker_env, pages_total, state}`
+[D43]: the pin of §8 (`engine_ref`, the worker job name and image digest, the container name, args,
+env, and both the timeout and the retry count), identity and timestamps, the content identity with its
+`mime_type`, the initial `state`, and `pages_total` — the source page count the admission byte scan
+could see, `null` when it could not, written once and never rewritten, because a worker that refuses
+the container accounts for exactly that many source pages (§2.6). The only later CAS update
 changes `state` from `accepted` to `running` (plus `updated_at`). Identity, pins, and timestamps are
 written once; a reader finding a changed identity field treats the record as corrupt, alerts, and fails
 closed `internal_error`. Readers decide only from `accepted_at`/`deadline_at` here and from `final.json`
