@@ -126,14 +126,18 @@ then deleted it and read its unique prefix back as empty. No document content wa
 written and no bucket setting was changed. This is real bucket behaviour, not a
 fake-client result; it says nothing about the Cloud Run runtime.
 
-**Remaining blocker (runtime identity).** The bucket's IAM policy carries only
+**Selected runtime identity and remaining blocker.** The user selected
+`tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com` as the
+existing runtime service account for this development deployment. The bucket's IAM policy carries only
 `thaiunion-shared-sandbox` project-level legacy bindings (`legacyBucketOwner` /
-`Reader`, `legacyObjectOwner` / `Reader`). The API, worker, and reconcile runtime
-service accounts in `thaiunion-ai-platform` therefore have **no** object access to
-this bucket. Granting it is an administrator action: this slice did not attempt it,
-and the development account is reported to lack `storage.buckets.setIamPolicy`. An
-administrator must bind those runtime identities to the bucket (or move the bucket
-into the service project) before a deployed execution can read or write durable state.
+`Reader`, `legacyObjectOwner` / `Reader`), so the selected service account has
+**no** object access to this bucket.
+The attempted `roles/storage.objectAdmin` bucket grant was denied because the
+development account lacks `storage.buckets.setIamPolicy`; read-back confirmed no
+binding was added. An administrator must bind the selected service account before a
+deployed execution can read or write durable state. Reusing this n8n runner identity
+is an explicit development choice and provides less role separation than the original
+dedicated-identity design.
 
 ## Verification (offline only)
 
@@ -178,11 +182,13 @@ An administrator must provide, at minimum:
    exists in `thaiunion-shared-sandbox` with the required settings (see
    *Cross-project bucket*); what is still missing is object access for the runtime
    identities below.
-3. A dedicated API runtime service account holding `run.invoker` on the service
-   and `run.jobs.get` + `run.jobs.runWithOverrides` on the worker job; a
-   dedicated worker service account with object access to the bucket; a
-   dispatch-only identity with **no** document access; and a reconcile identity
-   with object read/list plus the same `jobs:run` privilege.
+3. For development, use the user-selected existing service account
+   `tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com` for the
+   API/worker/reconcile/cleanup roles. An administrator must grant it bucket
+   `roles/storage.objectAdmin` and the minimum Cloud Run Job permissions needed by
+   the API (`run.jobs.get`, `run.jobs.runWithOverrides`). The user can attach this
+   account (`iam.serviceAccounts.actAs` was verified). A production deployment should
+   revisit separate least-privilege identities.
 4. The Cloud Run service (private, no `allUsers`, IAM invoker only), one versioned
    Cloud Run Job per worker revision, and a Cloud Scheduler trigger for the
    reconcile and (later) cleanup jobs.

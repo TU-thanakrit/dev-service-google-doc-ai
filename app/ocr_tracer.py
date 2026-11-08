@@ -88,9 +88,15 @@ PAGE_RETRIES = 1
 # failed page maps onto comes from §2.5's closed reason set.
 TRANSIENT_PAGE_ERROR = "page_engine_error"
 PERMANENT_PAGE_ERROR = "malformed_document"
+# The submission bound's own code, reused on the worker path when the container the
+# byte scan accepted turns out to hold more pages than the deployment admits (§2.3).
+TOO_MANY_PAGES = "too_many_pages"
 PAGE_ERROR_REASON = {
     TRANSIENT_PAGE_ERROR: "engine_unavailable",
     PERMANENT_PAGE_ERROR: "input_unreadable",
+    # A container refused before any page is numbered keeps the reason its code
+    # names: an over-limit document is unreadable input, never an engine failure.
+    TOO_MANY_PAGES: "input_unreadable",
 }
 # A page abandoned at the deadline still needs an entry, so it carries the
 # deadline's own code from the same closed set (§2.6, D42).
@@ -629,19 +635,24 @@ def _recognize_pages(
     return pages
 
 
-def _page_count(engine: OcrEngine, content: bytes, job: JobRecord) -> int | None:
-    """The engine's source-page count, or `None` when it cannot decode the bytes.
+def _page_count(engine: OcrEngine, content: bytes, job: JobRecord) -> tuple[int | None, str | None]:
+    """The engine's source-page count, and the closed-set code when it refuses the bytes.
 
-    A decoder failure is input, not a program error: it must reach the caller as
-    `input_unreadable` instead of failing an attempt with a traceback (§9.14).
+    A decoder failure is input, not a program error: it must reach the caller as a
+    refusal instead of failing an attempt with a traceback (§9.14). The engine's own
+    page-error code is kept when it reports one (§2.7), and anything else an engine
+    raises is the application's permanent refusal, so an engine that fails outside
+    that vocabulary can neither crash the worker nor escape the page bound.
     """
     try:
-        return engine.page_count(content, job.mime_type)
+        return engine.page_count(content, job.mime_type), None
+    except EnginePageError as exc:
+        return None, exc.code
     except Exception:
-        return None
+        return None, PERMANENT_PAGE_ERROR
 
 
-def _finalize_input_unreadable(
+def _finalize_refused_input(
     job: JobRecord, now: datetime, *, page_count: int | None, error_code: str
 ) -> None:
     """Finalize a document the worker refuses to recognize: no page work at all.
@@ -649,13 +660,14 @@ def _finalize_input_unreadable(
     One failed page is published rather than one entry per source page, because the
     document is over the configured bound (or undecodable) and recognizing it to
     enumerate its pages is exactly what must not happen; `error_code` says which
-    bound fired. This is the only place §2.6's per-source-page accounting is not
-    met, and it is stated in `docs/ocr-v1-admission.md`.
+    bound fired and comes from §2.7's closed set. This is the only place §2.6's
+    per-source-page accounting is not met, and it is stated in
+    `docs/ocr-v1-admission.md`.
     """
     job.pages_total = page_count
     job.pages = [_failed_page(1, error_code)]
     job.state = FAILED
-    job.reason = "input_unreadable"
+    job.reason = PAGE_ERROR_REASON.get(error_code, "input_unreadable")
     job.finalized_at = now
     job.expires_at = now + RETENTION
 
@@ -710,7 +722,9 @@ def run_job(
     `deadline_at` [D30, D42]. Reads the job before writing anything, reuses
     compatible page checkpoints so only the missing pages are recomputed, and
     never produces `succeeded` at or after the deadline. The page count is checked
-    against `limits.max_pages` before any page is recognized (issue #10).
+    against `limits.max_pages` before any page is recognized, and a container the
+    engine cannot decode is refused the same way instead of failing the attempt
+    (issues #10, #7).
     """
     limits = limits or AdmissionLimits()
     job = store.get_job(team_id, job_id)
@@ -727,18 +741,26 @@ def run_job(
         return False
 
     store.mark_running(job, now=clock.now())
-    total = _page_count(engine, content, job)
+    total, refusal = _page_count(engine, content, job)
+    # `total is None` is the engine's own refusal: `_page_count` returns a code only
+    # when it has no count to report.
     if total is None or not 1 <= total <= limits.max_pages:
         # The API refuses an over-limit document on its bytes; this is the second
         # gate for what those bytes hid (a page tree inside an object stream), and
-        # it is also what keeps an undecodable container from failing an attempt
-        # with a traceback (§9.14). No page is recognized either way.
-        _finalize_input_unreadable(
-            job,
-            clock.now(),
-            page_count=total,
-            error_code="too_many_pages" if total else "malformed_document",
-        )
+        # it is also what keeps a container the engine cannot decode from failing
+        # an attempt with a traceback (§9.14). No page is recognized either way.
+        now = clock.now()
+        if now >= job.deadline_at:
+            # Past the deadline the attempt publishes no readable decision (D42).
+            finalize_deadline(job, now)
+        else:
+            _finalize_refused_input(
+                job,
+                now,
+                page_count=total,
+                # The engine's own code wins; otherwise the bound that fired does.
+                error_code=refusal or (TOO_MANY_PAGES if total else PERMANENT_PAGE_ERROR),
+            )
         store.publish(job)
         return True
     job.pages_total = total

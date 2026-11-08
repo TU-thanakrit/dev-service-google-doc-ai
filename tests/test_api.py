@@ -42,6 +42,21 @@ def test_health_endpoint():
     assert response.json() == {"status": "ok"}
 
 
+def test_the_ocr_v1_api_stays_unmounted_until_its_own_cutover():
+    # The asynchronous OCR service is its own composition (`app.ocr_api`); this app
+    # keeps only the synchronous expense route until the documented cutover.
+    client = TestClient(create_app(processor=FakeProcessor()))
+
+    assert client.post("/v1/ocr/jobs").status_code == 404
+    assert client.get("/v1/ocr/jobs/some-job/result").status_code == 404
+
+    kept = client.post(
+        "/v1/documents:process",
+        files={"file": ("toll.pdf", b"pdf-bytes", "application/pdf")},
+    )
+    assert kept.status_code == 200
+
+
 def test_process_pdf_returns_service_output():
     client = TestClient(create_app(processor=FakeProcessor()))
 

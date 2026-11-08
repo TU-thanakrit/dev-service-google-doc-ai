@@ -21,14 +21,19 @@ from fastapi.testclient import TestClient
 from ocr_documents import jpeg_bytes, pdf_bytes, png_bytes, tiff_bytes
 
 from app.ocr_admission import (
+    CLOUD_RUN_HTTP1_MAX_REQUEST_BYTES,
+    DEFAULT_CAPACITY_CEILING,
     MAX_IMAGE_PIXELS,
     MAX_PAGES,
+    MAX_UPLOAD_BYTES,
     PER_ATTEMPT_TIMEOUT,
     AdmissionLimits,
     RequestSizeLimitMiddleware,
+    assert_limits,
 )
+from app.ocr_config import OcrServiceSettings
 from app.ocr_reconcile import reconcile
-from app.ocr_store import CAPACITY_NAME
+from app.ocr_store import CAPACITY_NAME, CAPACITY_OBJECT_BUDGET
 from app.ocr_tracer import (
     JOB_LIFETIME,
     SCHEMA_VERSION,
@@ -493,4 +498,72 @@ def test_reconciliation_removes_a_leaked_entry_for_a_final_job():
     reconcile(store=tracer.store, dispatcher=tracer.dispatcher, clock=tracer.clock)
 
     assert admission_entries(tracer.store) == {}
+
+
+# --- the configured bounds: DEV defaults, overridable, no capacity claim --------
+
+CONFIGURED_ENV = (
+    "OCR_MAX_UPLOAD_BYTES",
+    "OCR_MAX_PAGES",
+    "OCR_MAX_IMAGE_PIXELS",
+    "OCR_CAPACITY_CEILING",
+    "OCR_TASK_TIMEOUT_S",
+)
+
+
+def test_the_default_bounds_are_the_reviewed_dev_safe_values(monkeypatch):
+    # An ambient override (a local run) must not move a default.
+    for name in CONFIGURED_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+    limits = OcrServiceSettings(project="thaiunion-ai-platform", bucket="b").admission_limits()
+
+    assert limits == AdmissionLimits()
+    assert limits.max_upload_bytes == MAX_UPLOAD_BYTES == 20 * 1024 * 1024
+    assert limits.max_pages == MAX_PAGES
+    assert limits.max_image_pixels == MAX_IMAGE_PIXELS
+    assert limits.capacity_ceiling == DEFAULT_CAPACITY_CEILING == 1
+    assert limits.per_attempt_timeout == PER_ATTEMPT_TIMEOUT
+
+
+def test_every_bound_is_configurable_through_the_ocr_environment(monkeypatch):
+    monkeypatch.setenv("OCR_MAX_UPLOAD_BYTES", str(1024 * 1024))
+    monkeypatch.setenv("OCR_MAX_PAGES", "2")
+    monkeypatch.setenv("OCR_MAX_IMAGE_PIXELS", "1000000")
+    monkeypatch.setenv("OCR_CAPACITY_CEILING", "4")
+    monkeypatch.setenv("OCR_TASK_TIMEOUT_S", "60")
+
+    limits = OcrServiceSettings(project="thaiunion-ai-platform", bucket="b").admission_limits()
+
+    assert limits == AdmissionLimits(
+        max_upload_bytes=1024 * 1024,
+        max_pages=2,
+        max_image_pixels=1_000_000,
+        capacity_ceiling=4,
+        # An admission entry self-expires one per-attempt timeout past the deadline.
+        per_attempt_timeout=timedelta(seconds=60),
+    )
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        AdmissionLimits(max_upload_bytes=0),
+        AdmissionLimits(max_upload_bytes=CLOUD_RUN_HTTP1_MAX_REQUEST_BYTES + 1),
+        AdmissionLimits(max_pages=0),
+        AdmissionLimits(max_image_pixels=0),
+        AdmissionLimits(capacity_ceiling=0),
+        # ceiling x max_entry_bytes must stay inside the capacity object budget.
+        AdmissionLimits(capacity_ceiling=CAPACITY_OBJECT_BUDGET + 1),
+    ],
+)
+def test_a_bound_outside_the_reviewed_range_is_refused(limits):
+    with pytest.raises(ValueError):
+        assert_limits(limits)
+
+
+def test_an_invalid_bound_fails_the_composition_at_startup():
+    # A misconfigured deployment must not come up admitting unbounded input.
+    with pytest.raises(ValueError):
+        build(limits=AdmissionLimits(max_pages=0))
 

@@ -92,6 +92,16 @@ ceiling is inside the platform request ceiling (D38), each limit is positive, an
   not happen. The job is `failed`/`input_unreadable`, the page carries `too_many_pages`
   (or `malformed_document` when the container could not be decoded at all), and the
   published `pages_total` is `null` when the count is unknown.
+- **One refusal shape covers both the page bound and an undecodable container.** The
+  page carries the code of the bound that fired, or — when the real engine (issue #7)
+  refuses the bytes itself — the engine's own §2.7 page code (`malformed_document`, or
+  `page_engine_error` → job `reason: engine_unavailable` for a decode command that
+  timed out or could not be spawned). An engine that raises outside that vocabulary
+  is treated as the permanent refusal, so it can neither crash the worker nor escape
+  the bound. The merged `integration/ocr-service-v1` tip published an empty `pages`
+  list instead; one shape was chosen because §2.6 requires failed pages to be present
+  and §9 scenario 14 asks for a page error, and because the code is what tells the
+  caller which bound fired.
 - **The byte-level PDF page count misses object-stream page trees.** A PDF whose page
   objects live inside a compressed object stream counts 0 here (the `%%EOF`/trailer
   check keeps it from being called malformed). This is a deliberate accepted limit,
@@ -121,6 +131,14 @@ ceiling is inside the platform request ceiling (D38), each limit is positive, an
   submissions admitting exactly one, release on success and on failure, pruning of an
   abandoned entry, a corrupt object failing closed, and reconciliation removing a
   leaked entry for a final job.
+- the configured bounds: the DEV-safe defaults (and that an ambient `OCR_*` override
+  cannot move one), every bound read from its `OCR_*` variable, `assert_limits`
+  refusing a bound outside the reviewed range, and the composition failing at startup
+  on an invalid bound.
+
+`tests/test_api.py` asserts the production app still serves `/v1/documents:process`
+and that the standalone OCR API stays unmounted (404 on `/v1/ocr/jobs`) until its own
+cutover.
 
 `tests/ocr_documents.py` builds the smallest structurally valid PDF/PNG/JPEG/TIFF
 documents for these tests (no third-party or sensitive content). The pre-existing

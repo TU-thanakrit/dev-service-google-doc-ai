@@ -62,6 +62,16 @@ class OcrServiceSettings(BaseSettings):
     job_team_id: str = ""
     job_id: str = ""
 
+    # Engine role (issue #7). The provisional DEV selection is Tesseract with the
+    # distro `tha`+`eng` models (`docs/ocr-v1-benchmark-report.md` §6); production
+    # selection stays blocked, and per-job pinning is ticket #11. The binary names
+    # resolve on `PATH`, and `tessdata_prefix` is only needed when the models do
+    # not sit in Tesseract's compile-time directory.
+    engine_lang: str = "tha+eng"
+    engine_raster_dpi: int = 300
+    engine_tesseract: str = "tesseract"
+    engine_tessdata_prefix: str | None = None
+
     def admission_limits(self) -> AdmissionLimits:
         """This deployment's input and capacity bounds.
 
