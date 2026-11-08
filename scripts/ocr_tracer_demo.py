@@ -15,17 +15,25 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
-from app.ocr_tracer import JOB_LIFETIME, EnginePage, create_ocr_tracer_app
+from app.ocr_tracer import (
+    JOB_LIFETIME,
+    EnginePage,
+    MappingTeamDirectory,
+    Principal,
+    create_ocr_tracer_app,
+)
 from app.ocr_tracer_fakes import (
     ControllableDispatcher,
     FakeOcrEngine,
+    FakeTokenVerifier,
     InMemoryOcrStore,
-    StaticIdentity,
 )
 
 PDF_BYTES = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
 IDEMPOTENCY_KEY = "demo-key-0001"
 LATE_IDEMPOTENCY_KEY = "demo-key-late-01"
+DEMO_TOKEN = "demo-verified-id-token"
+DEMO_EMAIL = "demo-caller@thaiunion-ai-platform.iam.gserviceaccount.com"
 START = datetime(2026, 11, 8, 4, 31, 7, tzinfo=UTC)
 
 # Modules that would mean a real cloud client had been constructed or imported.
@@ -65,8 +73,12 @@ def main() -> int:
             store=store,
             dispatcher=dispatcher,
             clock=clock,
-            identity=StaticIdentity("demo-team"),
+            verifier=FakeTokenVerifier(
+                {DEMO_TOKEN: Principal(email=DEMO_EMAIL, subject="demo-subject")}
+            ),
+            directory=MappingTeamDirectory({DEMO_EMAIL: "demo-team"}),
         ),
+        headers={"Authorization": f"Bearer {DEMO_TOKEN}"},
         raise_server_exceptions=False,
     )
 

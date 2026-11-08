@@ -7,6 +7,7 @@ exercised deterministically. It is still not evidence about real GCS behaviour
 """
 
 import threading
+from collections.abc import Mapping
 
 from fastapi import Request
 
@@ -15,7 +16,7 @@ from app.ocr_store import (
     JobRecord,
     PreconditionFailed,
 )
-from app.ocr_tracer import Clock, EngineResult, OcrEngine, run_job
+from app.ocr_tracer import Clock, EngineResult, OcrEngine, Principal, run_job
 
 # Fake, stable worker identity pinned into every local job (contract §8). The real
 # per-revision pin, its template comparison, and its enforcement are ticket #11.
@@ -123,11 +124,18 @@ class ControllableDispatcher:
             )
 
 
-class StaticIdentity:
-    """Fake identity resolver. Real ID-token verification is ticket #5."""
+class FakeTokenVerifier:
+    """Fake authentication: issues exactly the tokens it was given (401 otherwise).
 
-    def __init__(self, team_id: str | None) -> None:
-        self._team_id = team_id
+    Real signature/issuer/audience/expiry verification lives in `app.ocr_auth`;
+    it is not imported here, so fake mode loads no GCP library.
+    """
 
-    def team_id(self, request: Request) -> str | None:
-        return self._team_id
+    def __init__(self, tokens: Mapping[str, Principal]) -> None:
+        self._tokens = dict(tokens)
+
+    def verify(self, request: Request) -> Principal | None:
+        scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+        if scheme.lower() != "bearer":
+            return None
+        return self._tokens.get(token.strip())

@@ -5,6 +5,7 @@ description = "POC API for Thai expense document OCR, classification, and extrac
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.116,<1",
+    "google-auth>=2.62,<3",
     "google-cloud-documentai>=3.6,<4",
     "google-cloud-storage>=3,<4",
     "google-genai>=1.45,<2",

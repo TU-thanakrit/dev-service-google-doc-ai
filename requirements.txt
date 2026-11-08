@@ -39,6 +39,7 @@ google-auth==2.62.0
     #   google-cloud-documentai
     #   google-cloud-storage
     #   google-genai
+    #   service-google-doc-ai
 google-cloud-core==2.8.0
     # via google-cloud-storage
 google-cloud-documentai==3.16.0

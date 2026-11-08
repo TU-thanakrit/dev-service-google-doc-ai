@@ -41,6 +41,7 @@ RETENTION = timedelta(hours=24)
 # Allowlisted messages: no path, bucket, job, processor, or token.
 ERROR_MESSAGES = {
     "unauthorized_caller": "caller identity could not be verified",
+    "team_not_authorized": "verified caller is not mapped to a team",
     "not_found": "job not found",
     "idempotency_conflict": "Idempotency-Key was already used with different content",
     "invalid_idempotency_key": "Idempotency-Key is missing or malformed",
@@ -80,14 +81,42 @@ class SystemClock:
         return datetime.now(UTC)
 
 
-class IdentityResolver(Protocol):
-    """Maps a request to a verified team_id.
+@dataclass(frozen=True, slots=True)
+class Principal:
+    """A verified caller: the identity the credential proves, nothing caller-declared."""
 
-    Real ID-token verification is a deployment seam (ticket #5); the tracer only
-    needs the verified-team context to be injectable.
+    email: str
+    subject: str
+
+
+class TokenVerifier(Protocol):
+    """Authentication seam: request credential -> verified principal (§7.1).
+
+    `None` means the credential is missing or fails verification (401). The
+    adapter refuses every identity header; only the presented token counts.
     """
 
-    def team_id(self, request: Request) -> str | None: ...
+    def verify(self, request: Request) -> Principal | None: ...
+
+
+class TeamDirectory(Protocol):
+    """Authorization seam: verified principal -> stable internal team_id (§7.3)."""
+
+    def team_id(self, principal: Principal) -> str | None: ...
+
+
+class MappingTeamDirectory:
+    """Deployed allowlist: verified principal email -> internal team_id.
+
+    `team_id` is the internal ownership key (never an email), so a future Entra
+    identity can be mapped onto the same records (issue #5).
+    """
+
+    def __init__(self, teams: dict[str, str]) -> None:
+        self._teams = dict(teams)
+
+    def team_id(self, principal: Principal) -> str | None:
+        return self._teams.get(principal.email)
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,10 +205,13 @@ def _error(
     )
 
 
-def _verified_team(identity: IdentityResolver, request: Request) -> str:
-    team_id = identity.team_id(request)
-    if team_id is None:
+def _verified_team(verifier: TokenVerifier, directory: TeamDirectory, request: Request) -> str:
+    principal = verifier.verify(request)
+    if principal is None:
         raise OcrError(401, "unauthorized_caller")
+    team_id = directory.team_id(principal)
+    if team_id is None:
+        raise OcrError(403, "team_not_authorized")
     return team_id
 
 
@@ -510,7 +542,8 @@ def create_ocr_tracer_app(
     store: DurableOcrStore,
     dispatcher: Dispatcher,
     clock: Clock,
-    identity: IdentityResolver,
+    verifier: TokenVerifier,
+    directory: TeamDirectory,
 ) -> FastAPI:
     """Build the tracer app from injected collaborators. Dev/test composition only.
 
@@ -559,7 +592,7 @@ def create_ocr_tracer_app(
         file: Annotated[UploadFile, File()],
         idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     ) -> JSONResponse:
-        team_id = _verified_team(identity, request)
+        team_id = _verified_team(verifier, directory, request)
 
         key = idempotency_key or ""
         if not IDEMPOTENCY_KEY_PATTERN.fullmatch(key):
@@ -586,12 +619,16 @@ def create_ocr_tracer_app(
 
     @app.get("/v1/ocr/jobs/{job_id}")
     def get_job(job_id: str, request: Request) -> JSONResponse:
-        job = _servable_job(store, _verified_team(identity, request), job_id, clock.now())
+        job = _servable_job(
+            store, _verified_team(verifier, directory, request), job_id, clock.now()
+        )
         return JSONResponse(status_code=200, content=_status_body(job))
 
     @app.get("/v1/ocr/jobs/{job_id}/result")
     def get_result(job_id: str, request: Request) -> JSONResponse:
-        job = _servable_job(store, _verified_team(identity, request), job_id, clock.now())
+        job = _servable_job(
+            store, _verified_team(verifier, directory, request), job_id, clock.now()
+        )
         if job.finalized_at is None:
             return JSONResponse(
                 status_code=202,
