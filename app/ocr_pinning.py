@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 DIGEST_ALGORITHM = "sha256"
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -33,7 +34,7 @@ WORKER_JOB_PREFIX = "dev-ocr-service-worker"
 WORKER_JOB_SLUG_LENGTH = 12
 
 
-class PinError(Exception):
+class PinError(ValueError):
     """A pin that cannot be used as configured.
 
     Fail closed: every caller maps it onto the contract's non-retryable
@@ -169,6 +170,23 @@ class WorkerPin:
             task_timeout_s=task_timeout_s,
             task_max_retries=task_max_retries,
         )
+
+    def job_fields(self) -> dict[str, Any]:
+        """The pin fields as a new `job.json` records them (§5.7, D43).
+
+        One method names what is frozen into a job, so the record and the pin
+        cannot drift apart field by field.
+        """
+        return {
+            "engine_ref": self.engine_ref,
+            "worker_revision_digest": self.worker_revision_digest,
+            "worker_job_name": self.worker_job_name,
+            "worker_container_name": self.worker_container_name,
+            "worker_args": self.worker_args,
+            "worker_env": self.worker_env,
+            "task_timeout_s": self.task_timeout_s,
+            "task_max_retries": self.task_max_retries,
+        }
 
     @classmethod
     def from_job(cls, job) -> WorkerPin:

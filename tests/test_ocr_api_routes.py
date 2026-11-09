@@ -119,6 +119,32 @@ def test_liveness_answers_without_a_cloud_client(served_app):
     assert client.get("/health").json() == {"status": "ok"}
 
 
+def test_importing_and_serving_health_when_adc_and_gcs_fail(monkeypatch):
+    # Contract §2.1, §11.2 #28: `/health` starts and responds without ADC or GCS
+    # construction, even when both are forced to fail if called.
+    monkeypatch.setenv("OCR_PROJECT", SERVICE_PROJECT)
+    monkeypatch.setenv("OCR_BUCKET", BUCKET)
+    monkeypatch.setenv("OCR_BUCKET_PROJECT", BUCKET_PROJECT)
+    monkeypatch.setenv("OCR_API_AUDIENCE", API_AUDIENCE)
+    monkeypatch.setenv("OCR_WORKER_REVISION_DIGEST", WORKER_DIGEST)
+
+    def forbidden_cloud_call(*args, **kwargs):
+        raise AssertionError("cloud client constructed on import or /health")
+
+    monkeypatch.setattr(google.auth, "default", forbidden_cloud_call)
+    monkeypatch.setattr(gcs_objects, "create_gcs_ocr_store", forbidden_cloud_call)
+    monkeypatch.setattr(gcs_objects.storage, "Client", forbidden_cloud_call)
+    sys.modules.pop("app.ocr_api", None)
+    try:
+        module = importlib.import_module("app.ocr_api")
+        response = TestClient(module.app).get("/health")
+    finally:
+        sys.modules.pop("app.ocr_api", None)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_the_container_command_serves_the_ocr_api_and_never_the_legacy_app():
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     command = [line for line in dockerfile.splitlines() if line.startswith("CMD")]

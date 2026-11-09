@@ -8,18 +8,20 @@ reconcilers cannot double-finalize: `final.json` is the single arbiter (contract
 Rows are evaluated in order. Reconciliation never resumes page work; it only
 dispatches, finalizes, or leaves a job for its deadline.
 
-Deferred, and named rather than silently missing: the capacity set, cleanup, and
-the missing-input/`idem`-record repairs of §6.2 belong to later tickets. The
-deadline path does account for every page it can know: reconciliation has no
+The deadline path accounts for every page it can know: reconciliation has no
 engine, so it credits the durable checkpoints and the persisted page count and
 reports each remaining page failed at the deadline, rather than finalizing with a
-short or wrong page list.
+short or wrong page list. A job whose input was never materialized is finalized
+`failed`/`internal_error` once `materialization_grace` has elapsed without a live
+lease (§6.2), and its `idem` record is deleted conditionally so a same-key retry
+can start cleanly; inside that grace window the job is left alone so the creator
+can finish materializing it.
 """
 
 from app.ocr_dispatch import Dispatcher, launch
 from app.ocr_store import (
-    DISPATCH_ATTEMPT_CAP,
     FAILED,
+    MATERIALIZATION_GRACE,
     RECONCILER_FENCE,
     SUCCEEDED,
     DurableOcrStore,
@@ -74,19 +76,29 @@ def _reconcile_job(
         finalize_deadline(job, now)
         store.publish(job, fence=RECONCILER_FENCE)
         return f"finalized:deadline_exceeded:{job.team_id}/{job.job_id}"
+    if job.last_error_code is not None:
+        # A non-retryable launch error does not retry (§6.1 step 5): finalize
+        # `failed`/`engine_unavailable` at once rather than launching a second
+        # attempt that will fail the same way.
+        _finalize_unavailable(store, job, now)
+        return f"finalized:{job.last_error_code}:{job.team_id}/{job.job_id}"
+    if not store.input_exists(job):
+        # A job is usable only with its input (§4, §6.2, §9.16): never launch or
+        # re-dispatch one whose input is missing. Inside `materialization_grace`
+        # the creator may still be uploading it, so wait; past the grace (with no
+        # live lease) finalize `failed`/`internal_error` and conditionally delete
+        # the `idem` record so a same-key retry starts cleanly.
+        if now - job.accepted_at < MATERIALIZATION_GRACE:
+            return None
+        if store.live_lease(job, now) is not None:
+            return None
+        _finalize_missing_input(store, job, now)
+        return f"finalized:internal_error:{job.team_id}/{job.job_id}"
     if job.attempts == 0:
         # Crash between materialization and launch, or a lost `202` [D28].
         if store.create_dispatch(job) is not None:
             launch(store, dispatcher, job)
             return f"dispatched:{job.team_id}/{job.job_id}"
-        return None
-    if job.attempts >= DISPATCH_ATTEMPT_CAP:
-        if job.last_error_code is not None:
-            # A non-retryable launch error with attempts exhausted: finalize
-            # rather than retry forever (§6.1 step 5).
-            _finalize_unavailable(store, job, now)
-            return f"finalized:{job.last_error_code}:{job.team_id}/{job.job_id}"
-        # Attempts exhausted with no non-retryable error: wait for the deadline.
         return None
     if store.live_lease(job, now) is not None:
         return None
@@ -104,6 +116,17 @@ def _finalize_unavailable(store: DurableOcrStore, job: JobRecord, now) -> None:
     job.finalized_at = now
     job.expires_at = now + RETENTION
     store.publish(job, fence=RECONCILER_FENCE)
+
+
+def _finalize_missing_input(store: DurableOcrStore, job: JobRecord, now) -> None:
+    job.state = FAILED
+    job.reason = "internal_error"
+    job.finalized_at = now
+    job.expires_at = now + RETENTION
+    store.publish(job, fence=RECONCILER_FENCE)
+    # Generation- and `job_id`-conditional (§6.2, D44): if a later submission has
+    # already replaced the record for a new job, the delete is skipped.
+    store.delete_claim_for_job(job)
 
 
 def main(argv: list[str] | None = None) -> int:

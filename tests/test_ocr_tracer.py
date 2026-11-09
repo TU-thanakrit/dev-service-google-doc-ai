@@ -452,6 +452,49 @@ def test_request_id_is_echoed_in_error_bodies():
     assert_error(response, 400, "invalid_idempotency_key", request_id="req-42")
 
 
+@pytest.mark.parametrize(
+    "malicious_id",
+    [
+        "gs://private-bucket/secret-token",
+        "Bearer eyJhbGciOiJSUzI1NiJ9.secret",
+        "req-1\nocr_tracer forged=true",
+        "../jobs/team-b/job-0001",
+        "bad id with spaces",
+        "x" * 129,
+        "   ",
+    ],
+)
+def test_an_unsafe_request_id_is_neither_echoed_nor_logged(caplog, malicious_id):
+    # Client error path (400), storage unavailable path (503), and unexpected
+    # failure path (500): none may echo or log an unvalidated caller header.
+    client_error = build_tracer().client.post(
+        "/v1/ocr/jobs",
+        headers={"X-Request-Id": malicious_id},
+        files={"file": ("doc.pdf", PDF_BYTES, "application/pdf")},
+    )
+    assert_error(client_error, 400, "invalid_idempotency_key", request_id=None)
+
+    with caplog.at_level(logging.ERROR, logger="app.ocr_tracer"):
+        storage_error = build_tracer(objects=UnavailableObjects()).client.post(
+            "/v1/ocr/jobs",
+            headers={"Idempotency-Key": "retry-key-0001", "X-Request-Id": malicious_id},
+            files={"file": ("doc.pdf", PDF_BYTES, "application/pdf")},
+        )
+        internal_error = build_tracer(store=ExplodingStore()).client.get(
+            "/v1/ocr/jobs/6d1f9b2a-0000-4000-8000-000000000000",
+            headers={"X-Request-Id": malicious_id},
+        )
+
+    assert_error(storage_error, 503, "storage_unavailable", request_id=None)
+    assert_error(internal_error, 500, "internal_error", request_id=None)
+    if malicious_id.strip():
+        assert malicious_id.strip() not in client_error.text
+        assert malicious_id.strip() not in storage_error.text
+        assert malicious_id.strip() not in internal_error.text
+        assert malicious_id.strip() not in caplog.text
+    assert "request_id=None" in caplog.text
+
+
 def test_empty_document_is_rejected():
     response = submit(build_tracer(), content=b"", content_type="application/pdf")
 
@@ -1169,4 +1212,59 @@ def test_a_job_reason_never_carries_an_engine_supplied_code():
         "internal_error",
     }
     assert "totally_made_up" not in response.text
+
+
+def test_engine_page_warnings_and_text_source_outside_the_vocabulary_are_closed():
+    tracer = build_tracer(
+        pages=[
+            EnginePage(
+                text="",
+                text_source="gs://private-bucket/custom-source",
+                warnings=("gs://private-bucket/custom-warning", "no_text", "invented_warning"),
+            )
+        ]
+    )
+    job_id = submit(tracer).json()["job_id"]
+
+    tracer.dispatcher.run_pending()
+
+    response = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result")
+    body = response.json()
+    assert response.status_code == 200
+    assert body["pages"][0]["text_source"] == "ocr"
+    assert body["pages"][0]["warnings"] == ["no_text"]
+    assert body["warnings"] == ["no_text"]
+    assert "private-bucket" not in response.text
+    assert "invented_warning" not in response.text
+
+
+@pytest.mark.parametrize(
+    "corrupt_page",
+    [
+        {"status": "gs://private-bucket/corrupt-status"},
+        {"text_source": "gs://private-bucket/corrupt-source"},
+        {"warnings": ["gs://private-bucket/corrupt-warning"]},
+        {"error_code": "gs://private-bucket/corrupt-error"},
+    ],
+)
+def test_a_corrupt_stored_result_vocabulary_fails_closed_without_publishing_or_logging(
+    caplog, corrupt_page
+):
+    import json
+
+    tracer = build_tracer()
+    job_id = submit(tracer).json()["job_id"]
+    tracer.dispatcher.run_pending()
+    result_name = f"jobs/{TEAM_ID}/{job_id}/result.0.json"
+    payload, generation = tracer.store.objects.read(result_name)
+    document = json.loads(payload)
+    document["pages"][0].update(corrupt_page)
+    tracer.store.objects.replace(result_name, json.dumps(document).encode(), generation)
+
+    with caplog.at_level(logging.ERROR, logger="app.ocr_tracer"):
+        response = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result")
+
+    assert_error(response, 500, "internal_error")
+    assert "private-bucket" not in response.text
+    assert "private-bucket" not in caplog.text
 

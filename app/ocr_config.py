@@ -18,7 +18,8 @@ from app.ocr_admission import (
     MAX_UPLOAD_BYTES,
     AdmissionLimits,
 )
-from app.ocr_pinning import WorkerPin
+from app.ocr_cleanup import assert_cleanup_invariants
+from app.ocr_pinning import PinError, WorkerPin
 from app.ocr_tracer import parse_team_key
 
 
@@ -98,9 +99,23 @@ class OcrServiceSettings(BaseSettings):
         identity is configured, so an operator who changes the language or the
         raster resolution cannot silently keep pinning checkpoints to the old
         configuration. Only what the adapter itself reads is in the ref.
+
+        `OCR_ENGINE_TESSDATA_PREFIX` points the adapter at models *outside* the
+        image, and the derived ref names only in-image models, so an external
+        directory would otherwise reuse the same identity across two different
+        model sets. That is refused: an external directory must be given an
+        explicit `OCR_ENGINE_REF` of its own.
         """
+        if self.engine_ref != self.engine_ref.strip():
+            raise PinError("the engine_ref pin is empty or padded")
         if self.engine_ref:
             return self.engine_ref
+        if self.engine_tessdata_prefix is not None:
+            raise PinError(
+                "OCR_ENGINE_TESSDATA_PREFIX names an external model directory, so an "
+                "explicit OCR_ENGINE_REF is required: the derived ref names in-image "
+                "models only and would otherwise be reused across directories"
+            )
         binary = Path(self.engine_tesseract).name
         return f"tesseract:{binary}:{self.engine_lang}:{self.engine_raster_dpi}dpi"
 
@@ -135,6 +150,26 @@ class OcrServiceSettings(BaseSettings):
     def _bucket_project_defaults_to_the_service_project(self) -> "OcrServiceSettings":
         if not self.bucket_project:
             self.bucket_project = self.project
+        return self
+
+    @model_validator(mode="after")
+    def _the_cleanup_target_stays_reachable(self) -> "OcrServiceSettings":
+        """D32 at every role's startup: `per_attempt_timeout + period ≤ 1 h`.
+
+        Asserted where the settings are read, so the API, worker, reconcile, and
+        cleanup compositions all fail closed on a pair that would push the first
+        legal cleanup pass past the one-hour target (§10, D32); the check itself is
+        the one `assert_cleanup_invariants` the cleanup job also runs.
+        """
+        assert_cleanup_invariants(
+            per_attempt_timeout=timedelta(seconds=self.task_timeout_s),
+            schedule_period=timedelta(seconds=self.cleanup_schedule_period_s),
+        )
+        return self
+
+    @model_validator(mode="after")
+    def _external_tessdata_is_pinned(self) -> "OcrServiceSettings":
+        self.resolved_engine_ref()
         return self
 
     @model_validator(mode="after")

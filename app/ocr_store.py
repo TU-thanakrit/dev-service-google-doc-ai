@@ -47,6 +47,22 @@ FAILED = "failed"
 
 FINAL_STATES = (SUCCEEDED, PARTIALLY_SUCCEEDED, FAILED)
 
+# The closed page vocabularies of contract §2.6/§2.7, owned here because the
+# durable decode is one of the two boundaries that must enforce them: an
+# engine- or store-supplied string outside these sets is never published raw.
+PAGE_STATUSES = frozenset({SUCCEEDED, FAILED})
+TEXT_SOURCES = frozenset({"embedded", "ocr"})
+PAGE_WARNINGS = frozenset({"no_text", "possible_low_quality"})
+TRANSIENT_PAGE_ERROR = "page_engine_error"
+PERMANENT_PAGE_ERROR = "malformed_document"
+TOO_MANY_PAGES = "too_many_pages"
+DEADLINE_PAGE_ERROR = "deadline_exceeded"
+PAGE_ERROR_CODES = frozenset(
+    {TRANSIENT_PAGE_ERROR, PERMANENT_PAGE_ERROR, TOO_MANY_PAGES, DEADLINE_PAGE_ERROR}
+)
+# The one source a page falls back to when a value outside the closed set arrives.
+DEFAULT_TEXT_SOURCE = "ocr"
+
 # The fence of a writer that owns no worker execution (reconciliation and the
 # cleanup of an unreachable job). Every execution publishes under its own lease
 # fence, so its result object name is unique to that execution and is never
@@ -110,6 +126,8 @@ class ObjectStore(Protocol):
     """
 
     def read(self, name: str) -> tuple[bytes, int] | None: ...
+
+    def exists(self, name: str) -> bool: ...
 
     def create(self, name: str, payload: bytes) -> int: ...
 
@@ -412,19 +430,29 @@ def _decode_result(payload: bytes, name: str, job_id: str) -> tuple[int | None, 
         if not isinstance(raw, dict):
             raise CorruptRecord(name)
         warnings = raw.get("warnings")
-        if not isinstance(warnings, list) or not all(isinstance(w, str) for w in warnings):
+        if not isinstance(warnings, list) or not all(
+            isinstance(w, str) and w in PAGE_WARNINGS for w in warnings
+        ):
             raise CorruptRecord(name)
         text = raw.get("text")
         error_code = raw.get("error_code")
+        status = _field(raw, "status", str)
+        text_source = _field(raw, "text_source", str)
         if text is not None and not isinstance(text, str):
             raise CorruptRecord(name)
-        if error_code is not None and not isinstance(error_code, str):
+        # The published page vocabularies are closed (§2.6/§2.7): a stored string
+        # outside them is corruption to fail closed on, never a value to serve.
+        if status not in PAGE_STATUSES or text_source not in TEXT_SOURCES:
+            raise CorruptRecord(name)
+        if error_code is not None and (
+            not isinstance(error_code, str) or error_code not in PAGE_ERROR_CODES
+        ):
             raise CorruptRecord(name)
         pages.append(
             PageResult(
                 page_number=_field(raw, "page_number", int),
-                status=_field(raw, "status", str),
-                text_source=_field(raw, "text_source", str),
+                status=status,
+                text_source=text_source,
                 text=text,
                 warnings=warnings,
                 error_code=error_code,
@@ -482,7 +510,11 @@ def _decode_page(
         return None
     if not isinstance(text, str):
         return None
-    if not isinstance(warnings, list) or not all(isinstance(w, str) for w in warnings):
+    if text_source not in TEXT_SOURCES:
+        return None
+    if not isinstance(warnings, list) or not all(
+        isinstance(w, str) and w in PAGE_WARNINGS for w in warnings
+    ):
         return None
     return PageResult(
         page_number=page_number,
@@ -887,6 +919,15 @@ class DurableOcrStore:
         found = self.objects.read(_input_name(team_id, job_id))
         return None if found is None else found[0]
 
+    def input_exists(self, job: JobRecord) -> bool:
+        """Whether the job's input object is present, without reading its bytes.
+
+        Reconciliation uses this to finalize a job that never got its input
+        (§6.2); a metadata-only check keeps a pass from loading a whole document
+        only to learn it is absent.
+        """
+        return self.objects.exists(_input_name(job.team_id, job.job_id))
+
     def delete_input_if_present(self, job: JobRecord) -> bool:
         """Delete the input when it is present; `True` means it was deleted now.
 
@@ -1075,33 +1116,40 @@ class DurableOcrStore:
         no path can read the set low; the only drift the protocol can produce is
         over-reservation.
         """
-        for _ in range(MAX_CAPACITY_ATTEMPTS):
-            found = self.objects.read(CAPACITY_NAME)
-            entries = {} if found is None else _decode_capacity(found[0], CAPACITY_NAME)
-            entries = _live_entries(entries, now)
-            if job_id in entries:
+        try:
+            for _ in range(MAX_CAPACITY_ATTEMPTS):
+                found = self.objects.read(CAPACITY_NAME)
+                entries = {} if found is None else _decode_capacity(found[0], CAPACITY_NAME)
+                entries = _live_entries(entries, now)
+                if job_id in entries:
+                    return
+                if len(entries) >= ceiling:
+                    raise CapacityExceeded("ceiling")
+                entries[job_id] = {
+                    "admitted_at": now,
+                    "deadline_at": deadline_at,
+                    # Self-limiting: past this instant the job can run no page work
+                    # at all (§5.5), so the reservation expires with it.
+                    "expires_at": deadline_at + per_attempt_timeout,
+                }
+                payload = _encode_capacity(entries, now)
+                if len(payload) > CAPACITY_OBJECT_BUDGET:
+                    raise CapacityExceeded("budget")
+                try:
+                    if found is None:
+                        self.objects.create(CAPACITY_NAME, payload)
+                    else:
+                        self.objects.replace(CAPACITY_NAME, payload, found[1])
+                except PreconditionFailed:
+                    continue
                 return
-            if len(entries) >= ceiling:
-                raise CapacityExceeded("ceiling")
-            entries[job_id] = {
-                "admitted_at": now,
-                "deadline_at": deadline_at,
-                # Self-limiting: past this instant the job can run no page work at
-                # all (§5.5), so the reservation expires with it.
-                "expires_at": deadline_at + per_attempt_timeout,
-            }
-            payload = _encode_capacity(entries, now)
-            if len(payload) > CAPACITY_OBJECT_BUDGET:
-                raise CapacityExceeded("budget")
-            try:
-                if found is None:
-                    self.objects.create(CAPACITY_NAME, payload)
-                else:
-                    self.objects.replace(CAPACITY_NAME, payload, found[1])
-            except PreconditionFailed:
-                continue
-            return
-        raise CapacityExceeded("cas_exhausted")
+            raise CapacityExceeded("cas_exhausted")
+        except StorageUnavailable as exc:
+            # The capacity object could not be read or written: contract §6.4 fails
+            # closed `429 capacity_exceeded` (never a generic `503`), because no
+            # admission can be recorded and admitting unaccounted work is exactly
+            # the defect the set exists to remove.
+            raise CapacityExceeded("unreadable") from exc
 
     def release_admission(self, job_id: str, *, now: datetime) -> None:
         """Remove this job's admission; a lost release is not a failure (§5.4).
@@ -1193,7 +1241,7 @@ class DurableOcrStore:
         for name in self._job_object_names(job):
             if not self._purge(name):
                 complete = False
-        claim_gone = self._purge_claim(job)
+        claim_gone = self.delete_claim_for_job(job)
         return complete and claim_gone
 
     def _job_object_names(self, job: JobRecord) -> list[str]:
@@ -1220,7 +1268,7 @@ class DurableOcrStore:
             return False
         return True
 
-    def _purge_claim(self, job: JobRecord) -> bool:
+    def delete_claim_for_job(self, job: JobRecord) -> bool:
         """Delete the `idem` record only while it still names this job (D44).
 
         A name-addressed delete would remove a *live* record a later submission

@@ -53,6 +53,13 @@ jobs it cannot pin.
 (`tesseract:<binary>:<lang>:<raster dpi>dpi`). An operator who changes the language
 or the resolution cannot silently keep writing checkpoints that claim the old
 configuration; setting `OCR_ENGINE_REF` names a specific model or version instead.
+The worker image digest pins in-image models only: when `OCR_ENGINE_TESSDATA_PREFIX`
+points Tesseract at an external model directory, an explicit non-empty
+`OCR_ENGINE_REF` is required at startup so two external model directories cannot
+silently share the derived in-image identity. `OCR_TASK_MAX_RETRIES` defaults to
+`0` (`0` means Cloud Run tasks run once per launched execution) and is pinned and
+compared like every other template field, so retry policy is owned by the
+application's bounded dispatch attempts rather than uncontrolled platform retries.
 
 ## The launch is built from the record, never from the current setting
 

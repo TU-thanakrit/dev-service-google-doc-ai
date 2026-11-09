@@ -51,6 +51,9 @@ class InMemoryObjectStore:
     def read(self, name: str) -> tuple[bytes, int] | None:
         return self._objects.get(name)
 
+    def exists(self, name: str) -> bool:
+        return name in self._objects
+
     def create(self, name: str, payload: bytes) -> int:
         with self._lock:
             if name in self._objects:

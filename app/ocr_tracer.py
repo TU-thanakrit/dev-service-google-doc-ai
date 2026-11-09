@@ -25,16 +25,25 @@ from app.ocr_admission import (
     InputRejected,
     RequestSizeLimitMiddleware,
     assert_limits,
+    safe_request_id,
     validate_document,
 )
 from app.ocr_dispatch import Dispatcher, launch
 from app.ocr_store import (
+    DEADLINE_PAGE_ERROR,
+    DEFAULT_TEXT_SOURCE,
     FAILED,
     MATERIALIZATION_GRACE,
+    PAGE_ERROR_CODES,
+    PAGE_WARNINGS,
     PARTIALLY_SUCCEEDED,
+    PERMANENT_PAGE_ERROR,
     RECONCILER_FENCE,
     SCHEMA_VERSION,
     SUCCEEDED,
+    TEXT_SOURCES,
+    TOO_MANY_PAGES,
+    TRANSIENT_PAGE_ERROR,
     CapacityExceeded,
     Claim,
     DurableOcrStore,
@@ -87,22 +96,12 @@ PAGE_RETRIES = 1
 
 # Reviewed page-error categories (contract §2.7's closed vocabulary). A transient
 # page failure may recover on a retry; a permanent one (an undecodable page) never
-# can, so an unreadable document does not enter a retry loop. The job `reason` a
-# failed page maps onto comes from §2.5's closed reason set.
-TRANSIENT_PAGE_ERROR = "page_engine_error"
-PERMANENT_PAGE_ERROR = "malformed_document"
-# The submission bound's own code, reused on the worker path when the container the
-# byte scan accepted turns out to hold more pages than the deployment admits (§2.3).
-TOO_MANY_PAGES = "too_many_pages"
-# A page abandoned at the deadline still needs an entry, so it carries the
-# deadline's own code from the same closed set (§2.6, D42).
-DEADLINE_PAGE_ERROR = "deadline_exceeded"
-# The only codes a page entry may carry. An engine's code is untrusted input: a
-# value outside this set is published as the safe transient category instead, so
-# the closed vocabulary of §2.7 cannot be widened by an adapter (§2.7, D19).
-PAGE_ERROR_CODES = frozenset(
-    {TRANSIENT_PAGE_ERROR, PERMANENT_PAGE_ERROR, TOO_MANY_PAGES, DEADLINE_PAGE_ERROR}
-)
+# can, so an unreadable document does not enter a retry loop. The codes themselves
+# live in `app.ocr_store`, which owns the page record its decode boundary validates;
+# the job `reason` a failed page maps onto comes from §2.5's closed reason set.
+# An engine's code is untrusted input: a value outside the set is published as the
+# safe transient category instead, so the vocabulary cannot be widened by an
+# adapter (§2.7, D19).
 PAGE_ERROR_REASON = {
     TRANSIENT_PAGE_ERROR: "engine_unavailable",
     PERMANENT_PAGE_ERROR: "input_unreadable",
@@ -286,6 +285,16 @@ class OcrError(Exception):
         self.code = code
 
 
+def _request_id(request: Request) -> str | None:
+    """The caller's `X-Request-Id` when it is a bounded safe token, else `None`.
+
+    It is only ever echoed in a body or logged (never identity, dedupe, or a
+    storage path), so a value outside the allowed shape is dropped rather than
+    reflected or logged verbatim (contract §2.3).
+    """
+    return safe_request_id(request.headers.get("X-Request-Id"))
+
+
 def _error(
     status_code: int, code: str, request: Request, headers: dict[str, str] | None = None
 ) -> JSONResponse:
@@ -298,7 +307,7 @@ def _error(
             "error": {
                 "code": code,
                 "message": ERROR_MESSAGES[code],
-                "request_id": request.headers.get("X-Request-Id"),
+                "request_id": _request_id(request),
             },
         },
     )
@@ -357,12 +366,19 @@ def _status_body(job: JobRecord) -> dict[str, Any]:
 
 
 def _page_result(page_number: int, page: EnginePage) -> PageResult:
+    """One recognized page, with its metadata mapped onto the closed vocabularies.
+
+    An engine's `text_source` or warning is untrusted input: a value §2.6 does not
+    name is replaced by the safe default (`ocr`, or dropped) so an adapter can
+    neither widen the published vocabulary nor push an arbitrary string into a
+    result object or a log line (§2.6/§2.7).
+    """
     return PageResult(
         page_number=page_number,
         status=SUCCEEDED,
-        text_source=page.text_source,
+        text_source=page.text_source if page.text_source in TEXT_SOURCES else DEFAULT_TEXT_SOURCE,
         text=page.text.strip(),
-        warnings=list(page.warnings),
+        warnings=[warning for warning in page.warnings if warning in PAGE_WARNINGS],
     )
 
 
@@ -422,9 +438,9 @@ def _new_job(
     page_count: int | None,
     dispatcher: Dispatcher,
 ) -> JobRecord:
-    # The whole pin of §8, copied from the operator's current settings: it is
-    # written once here and every later retry runs this record, not the setting.
-    pin = dispatcher.pin
+    # The whole pin of §8, copied from the operator's current settings through the
+    # one helper that names the pinned fields: it is written once here and every
+    # later retry runs this record, not the setting.
     return JobRecord(
         job_id=claim.job_id,
         team_id=team_id,
@@ -437,14 +453,7 @@ def _new_job(
         # The admission byte scan's known source page count, written once and
         # never rewritten, so a worker refusal can account for every page.
         pages_total=page_count,
-        engine_ref=pin.engine_ref,
-        worker_revision_digest=pin.worker_revision_digest,
-        worker_job_name=pin.worker_job_name,
-        worker_container_name=pin.worker_container_name,
-        worker_args=pin.worker_args,
-        worker_env=pin.worker_env,
-        task_timeout_s=pin.task_timeout_s,
-        task_max_retries=pin.task_max_retries,
+        **dispatcher.pin.job_fields(),
     )
 
 
@@ -506,6 +515,21 @@ def _compensate(
         pass
 
 
+def _admission_window(job: JobRecord, limits: AdmissionLimits) -> timedelta:
+    """How long this job's admission entry may outlive its deadline (§6.4, D43).
+
+    An entry self-limits at `deadline_at + per_attempt_timeout`. For a job that
+    already exists that bound is the **pinned** `task_timeout_s` the job was
+    accepted with, not the deployment's current default, so a later settings
+    change cannot shorten the reservation of a job still running under a longer
+    bound. A record with no pinned timeout (a store-only fixture) falls back to
+    the deployment's own value.
+    """
+    if job.task_timeout_s > 0:
+        return timedelta(seconds=job.task_timeout_s)
+    return limits.per_attempt_timeout
+
+
 def _ensure_admission(
     store: DurableOcrStore, job: JobRecord, limits: AdmissionLimits, now: datetime
 ) -> None:
@@ -522,7 +546,7 @@ def _ensure_admission(
             deadline_at=job.deadline_at,
             now=now,
             ceiling=limits.capacity_ceiling,
-            per_attempt_timeout=limits.per_attempt_timeout,
+            per_attempt_timeout=_admission_window(job, limits),
         )
     except CapacityExceeded:
         raise OcrError(429, "capacity_exceeded") from None
@@ -1069,7 +1093,7 @@ def create_ocr_tracer_app(
         logger.error(
             "ocr_tracer storage unavailable error_code=%s request_id=%s job_id=%s",
             "storage_unavailable",
-            request.headers.get("X-Request-Id"),
+            _request_id(request),
             request.path_params.get("job_id"),
         )
         return _error(503, "storage_unavailable", request, headers={"Retry-After": "5"})
@@ -1081,7 +1105,7 @@ def create_ocr_tracer_app(
         logger.error(
             "ocr_tracer request failed error_code=%s request_id=%s job_id=%s",
             "internal_error",
-            request.headers.get("X-Request-Id"),
+            _request_id(request),
             request.path_params.get("job_id"),
         )
         return _error(500, "internal_error", request)

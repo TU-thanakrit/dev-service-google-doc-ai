@@ -89,7 +89,8 @@ contract §8). Copy it to `.env` for local work; `.env` is git-ignored.
 | New-resource prefix | `dev-ocr-service` | target |
 | Durable bucket | `gs://dev-ocr-service-data-asse1-1022222817897` | exists; settings read back (soft-delete retention `0`, uniform bucket-level access) |
 | Bucket project | `thaiunion-shared-sandbox` | exists |
-| Selected runtime service account | `tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com` | exists; **no bucket object access granted** |
+| Selected runtime service account | `tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com` | exists; **no bucket object access granted** |
+| n8n caller identity (`OCR_TEAMS`) | `tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com\|110367093326452748988` | caller/team mapping only; distinct from the runtime service account |
 
 The bucket is in its own project and the service is not: `OCR_BUCKET_PROJECT`
 carries the bucket's project into every role's store, while dispatch still
@@ -111,10 +112,10 @@ gcloud run deploy dev-ocr-service-api \
   --source . \
   --command uvicorn \
   --args app.ocr_api:app,--host,0.0.0.0,--port,8080 \
-  --service-account tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
+  --service-account tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
   --no-allow-unauthenticated \
   --max-instances 4 --memory 512Mi --cpu 1 \
-  --set-env-vars '^@^OCR_PROJECT=thaiunion-ai-platform@OCR_REGION=asia-southeast1@OCR_BUCKET=dev-ocr-service-data-asse1-1022222817897@OCR_BUCKET_PROJECT=thaiunion-shared-sandbox@OCR_API_AUDIENCE=https://dev-ocr-service-api-REPLACE.a.run.app@OCR_TEAMS={"tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com|REPLACE-WITH-SUBJECT":"team-dev"}@OCR_WORKER_REVISION_DIGEST=sha256:REPLACE@OCR_TASK_TIMEOUT_S=1800@OCR_TASK_MAX_RETRIES=0'
+  --set-env-vars '^@^OCR_PROJECT=thaiunion-ai-platform@OCR_REGION=asia-southeast1@OCR_BUCKET=dev-ocr-service-data-asse1-1022222817897@OCR_BUCKET_PROJECT=thaiunion-shared-sandbox@OCR_API_AUDIENCE=https://dev-ocr-service-api-REPLACE.a.run.app@OCR_TEAMS={"tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com|110367093326452748988":"team-dev"}@OCR_WORKER_REVISION_DIGEST=sha256:REPLACE@OCR_TASK_TIMEOUT_S=1800@OCR_TASK_MAX_RETRIES=0'
 ```
 
 `^@^` is the environment-variable delimiter, chosen because `OCR_TEAMS` and the
@@ -157,7 +158,7 @@ gcloud projects add-iam-policy-binding thaiunion-ai-platform \
 #    attempt to add it was denied for want of storage.buckets.setIamPolicy).
 gcloud storage buckets add-iam-policy-binding \
   gs://dev-ocr-service-data-asse1-1022222817897 \
-  --member serviceAccount:tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
+  --member serviceAccount:tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
   --role roles/storage.objectAdmin
 
 # 3. Cloud Run Job permissions the API needs to read the pinned template and
@@ -166,12 +167,12 @@ gcloud iam roles create dev_ocr_service_dispatch \
   --project thaiunion-ai-platform --title 'OCR v1 dispatch' \
   --permissions run.jobs.get,run.jobs.run,run.jobs.runWithOverrides,run.operations.get
 gcloud projects add-iam-policy-binding thaiunion-ai-platform \
-  --member serviceAccount:tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
+  --member serviceAccount:tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
   --role projects/thaiunion-ai-platform/roles/dev_ocr_service_dispatch
 
 # 4. Deployer attachment and the token path used by the verification command.
 gcloud iam service-accounts add-iam-policy-binding \
-  tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
+  tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
   --member user:thanakrit.boonquarmdee@thaiunion.com \
   --role roles/iam.serviceAccountUser
 gcloud iam service-accounts add-iam-policy-binding \
@@ -183,13 +184,17 @@ gcloud iam service-accounts add-iam-policy-binding \
 #    private service, and no one else may.
 gcloud run services add-iam-policy-binding dev-ocr-service-api \
   --project thaiunion-ai-platform --region asia-southeast1 \
-  --member serviceAccount:<n8n-caller-sa>@<project>.iam.gserviceaccount.com \
+  --member serviceAccount:tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
   --role roles/run.invoker
 ```
 
-Reusing `tu-ai-n8n-dev-runner-sa` for the API, worker, reconcile, and cleanup
-roles is an explicit development choice with less role separation than the
-original dedicated-identity design; a production deployment should revisit it.
+`tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com` is the selected
+deployment runtime identity for the API, worker, reconcile, and cleanup roles;
+`tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com` (subject
+`110367093326452748988`) is the n8n caller identity mapped in `OCR_TEAMS`. Keep
+caller and runtime identities distinct; sharing one runtime service account across
+the four OCR roles is an explicit development choice that a production deployment
+should revisit.
 
 Bucket settings to read back before any run (contract D17: versioning **disabled**,
 soft-delete retention `0`, no locks):

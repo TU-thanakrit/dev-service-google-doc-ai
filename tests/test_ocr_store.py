@@ -137,8 +137,10 @@ def test_input_is_create_once_and_a_precondition_conflict_is_success(store):
     store.put_input(job, b"document")
     store.put_input(job, b"document")  # 412 means the input is already present
 
+    assert store.input_exists(job) is True
     assert store.read_input(TEAM, job.job_id) == b"document"
     assert store.read_input(TEAM, "job-missing") is None
+    assert store.input_exists(make_job("job-missing")) is False
 
 
 def test_present_input_of_the_wrong_size_fails_closed(objects, store):
@@ -598,3 +600,60 @@ def test_an_invalid_checkpoint_is_replaced_only_at_the_generation_read(objects, 
     store.put_page_checkpoint(job, page_checkpoint(text="recovered"), now=SUBMITTED_AT)
 
     assert store.read_page_checkpoint(job, 1).text == "recovered"
+
+
+@pytest.mark.parametrize(
+    "bad_field",
+    [
+        {"text_source": "gs://private-bucket/source"},
+        {"warnings": ["gs://private-bucket/warning"]},
+        {"warnings": ["no_text", "invented_warning"]},
+    ],
+)
+def test_a_checkpoint_with_metadata_outside_the_closed_vocabulary_is_rejected(
+    objects, store, bad_field
+):
+    job = make_job()
+    store.create_job(job)
+    document = {
+        "schema_version": "ocr.v1",
+        "job_id": "job-0001",
+        "page_number": 1,
+        "status": "succeeded",
+        "text_source": "ocr",
+        "text": "page text",
+        "warnings": ["no_text"],
+        "engine_ref": job.engine_ref,
+        **bad_field,
+    }
+    objects.create(page_name(), json.dumps(document).encode())
+
+    assert store.read_page_checkpoint(job, 1) is None
+
+
+@pytest.mark.parametrize(
+    "bad_page_field",
+    [
+        {"status": "gs://private-bucket/status"},
+        {"text_source": "gs://private-bucket/source"},
+        {"warnings": ["gs://private-bucket/warning"]},
+        {"error_code": "gs://private-bucket/error"},
+    ],
+)
+def test_a_stored_result_with_page_metadata_outside_the_closed_vocabulary_fails_closed(
+    objects, store, bad_page_field
+):
+    finalized_job(store)
+    page = {
+        "page_number": 1,
+        "status": "succeeded",
+        "text_source": "ocr",
+        "text": "ok",
+        "warnings": ["no_text"],
+        "error_code": None,
+        **bad_page_field,
+    }
+    rewrite_object(objects, "jobs/team-a/job-0001/result.0.json", pages=[page], pages_total=1)
+
+    with pytest.raises(CorruptRecord):
+        store.get_job(TEAM, "job-0001")
