@@ -37,4 +37,4 @@ USER 10001
 # `app/integrations.py`) are retained in the image as historical code only: no
 # command here starts them, so no deployed role can reach the Gemini or Document
 # AI expense path (issue #12).
-CMD ["sh", "-c", "uvicorn app.ocr_api:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "exec uvicorn app.ocr_api:app --host 0.0.0.0 --port ${PORT}"]

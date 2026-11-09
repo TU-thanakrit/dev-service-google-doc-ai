@@ -170,7 +170,7 @@ def test_the_container_command_is_a_valid_exec_form():
     assert json.loads(command.removeprefix("CMD ")) == [
         "sh",
         "-c",
-        "uvicorn app.ocr_api:app --host 0.0.0.0 --port ${PORT}",
+        "exec uvicorn app.ocr_api:app --host 0.0.0.0 --port ${PORT}",
     ]
 
 
