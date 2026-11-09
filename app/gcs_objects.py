@@ -59,6 +59,13 @@ class GcsObjects:
             raise StorageUnavailable(name) from exc
         return payload, generation
 
+    def exists(self, name: str) -> bool:
+        """Whether the object is present, from metadata only (no download)."""
+        try:
+            return self._bucket.blob(name).exists()
+        except GoogleAPIError as exc:
+            raise StorageUnavailable(name) from exc
+
     def list_names(self, prefix: str) -> list[str]:
         try:
             return [blob.name for blob in self._bucket.list_blobs(prefix=prefix)]

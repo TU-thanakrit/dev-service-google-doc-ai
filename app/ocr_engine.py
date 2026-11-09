@@ -52,6 +52,24 @@ TIFF = "image/tiff"
 SINGLE_PAGE_TYPES = (JPEG, PNG)
 IMAGE_SUFFIX = {JPEG: ".jpg", PNG: ".png"}
 
+# The container kinds the adapter serves. `_container_kind` is the one place a
+# mime type is mapped onto one of them, so `page_count` and `recognize_page`
+# cannot disagree about which container a mime type is (§2.6/D24).
+PDF_KIND = "pdf"
+SINGLE_PAGE_KIND = "single-page"
+TIFF_KIND = "tiff"
+
+
+def _container_kind(mime_type: str) -> str | None:
+    """The kind of container `mime_type` names, or `None` when it is unsupported."""
+    if mime_type == PDF:
+        return PDF_KIND
+    if mime_type in SINGLE_PAGE_TYPES:
+        return SINGLE_PAGE_KIND
+    if mime_type == TIFF:
+        return TIFF_KIND
+    return None
+
 # Published page fields (§2.6/D11/D23): the two text sources and the one warning
 # this adapter can decide from evidence it actually has.
 EMBEDDED = "embedded"
@@ -203,11 +221,12 @@ class CommandOcrEngine:
     ) -> int:
         """Source page/frame count, without recognizing anything (§2.6/D24)."""
         deadline = self._deadline(timeout_s)
-        if mime_type == PDF:
+        kind = _container_kind(mime_type)
+        if kind == PDF_KIND:
             return self._pdf_page_count(content, deadline)
-        if mime_type in SINGLE_PAGE_TYPES:
+        if kind == SINGLE_PAGE_KIND:
             return 1
-        if mime_type == TIFF:
+        if kind == TIFF_KIND:
             return self._tiff_frame_count(content, deadline)
         raise self._error(0, PERMANENT_ERROR)
 
@@ -230,13 +249,14 @@ class CommandOcrEngine:
         if page_number < 1:
             raise self._error(page_number, PERMANENT_ERROR)
         deadline = self._deadline(timeout_s)
-        if mime_type == PDF:
+        kind = _container_kind(mime_type)
+        if kind == PDF_KIND:
             return self._pdf_page(content, page_number, deadline)
-        if mime_type in SINGLE_PAGE_TYPES:
+        if kind == SINGLE_PAGE_KIND:
             if page_number != 1:
                 raise self._error(page_number, PERMANENT_ERROR)
             return self._ocr_file(content, IMAGE_SUFFIX[mime_type], page_number, deadline)
-        if mime_type == TIFF:
+        if kind == TIFF_KIND:
             return self._tiff_frame(content, page_number, deadline)
         raise self._error(page_number, PERMANENT_ERROR)
 

@@ -626,6 +626,8 @@ def test_engine_configuration_is_read_from_the_ocr_environment(monkeypatch):
     monkeypatch.setenv("OCR_ENGINE_TESSERACT", "/opt/tesseract")
     monkeypatch.setenv("OCR_ENGINE_TESSDATA_PREFIX", "/opt/tessdata")
     monkeypatch.setenv("OCR_ENGINE_RASTER_DPI", "200")
+    # An external model directory cannot silently reuse the derived in-image ref.
+    monkeypatch.setenv("OCR_ENGINE_REF", "tesseract:opt-tessdata:tha:200dpi")
     # The provisional DEV engine is only buildable under the explicit opt-in.
     monkeypatch.setenv("OCR_ALLOW_PROVISIONAL_ENGINE", "true")
 
@@ -638,3 +640,20 @@ def test_engine_configuration_is_read_from_the_ocr_environment(monkeypatch):
 
     engine = build_engine(settings)
     assert isinstance(engine, CommandOcrEngine)
+    assert engine.engine_ref == "tesseract:opt-tessdata:tha:200dpi"
+
+
+@pytest.mark.parametrize("engine_ref", ["", "   ", " padded "])
+def test_an_external_tessdata_prefix_requires_an_explicit_nonempty_engine_ref(
+    monkeypatch, engine_ref
+):
+    # The worker image digest pins in-image models only. Pointing Tesseract at an
+    # external `OCR_ENGINE_TESSDATA_PREFIX` without an explicit `OCR_ENGINE_REF`
+    # would let two different model directories share the derived identity (§8).
+    monkeypatch.setenv("OCR_PROJECT", "thaiunion-ai-platform")
+    monkeypatch.setenv("OCR_BUCKET", "dev-ocr-service-bucket")
+    monkeypatch.setenv("OCR_ENGINE_TESSDATA_PREFIX", "/opt/tessdata")
+    monkeypatch.setenv("OCR_ENGINE_REF", engine_ref)
+
+    with pytest.raises(ValueError):
+        OcrServiceSettings()

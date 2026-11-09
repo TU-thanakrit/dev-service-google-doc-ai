@@ -133,15 +133,15 @@ def main() -> int:
     assert work(lost, lost_id) == 0
     assert lost.client.get(f"/v1/ocr/jobs/{lost_id}/result").status_code == 200
 
-    # Non-retryable launch failure: two attempts, then finalize `engine_unavailable`.
+    # Non-retryable launch failure: finalized `engine_unavailable` at once, with no
+    # second launch (§6.1 step 5).
     broken = build(launch_error="engine_unavailable")
     broken_id = submit(broken, key="demo-key-brok1").json()["job_id"]
     broken.dispatcher.pending.clear()
-    broken.clock.advance(DISPATCH_SPACING)
-    reconcile(store=broken.store, dispatcher=broken.dispatcher, clock=broken.clock)
     finalized = reconcile(store=broken.store, dispatcher=broken.dispatcher, clock=broken.clock)
     print(f"POST /v1/ocr/jobs (launch denied)     -> {finalized}")
     assert finalized == [f"finalized:engine_unavailable:{TEAM}/{broken_id}"]
+    assert broken.dispatcher.pending == []
     failed = broken.client.get(f"/v1/ocr/jobs/{broken_id}/result").json()
     print(f"GET  result (launch denied)           -> {failed['state']} reason={failed['reason']}")
     assert (failed["state"], failed["reason"]) == ("failed", "engine_unavailable")

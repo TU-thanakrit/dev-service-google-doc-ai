@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.ocr_config import OcrServiceSettings
 from app.ocr_engine import EngineRegistry
 from app.ocr_pinning import (
     PinError,
@@ -19,9 +20,9 @@ from app.ocr_pinning import (
     normalize_image_digest,
     versioned_worker_job_name,
 )
-from app.ocr_store import JobRecord
+from app.ocr_store import DurableOcrStore, JobRecord
 from app.ocr_tracer import EnginePage
-from app.ocr_tracer_fakes import FakeOcrEngine
+from app.ocr_tracer_fakes import FakeOcrEngine, InMemoryObjectStore
 
 IMAGE = "asia-southeast1-docker.pkg.dev/thaiunion-ai-platform/ocr/worker"
 DIGEST = "sha256:" + "0123456789ab" * 5 + "cdef"
@@ -144,18 +145,29 @@ def test_the_pin_read_back_from_a_job_record_is_the_recorded_pin():
         args=("--once",),
         env=(("OCR_JOB_TEAM_ID", "team-a"), ("OCR_JOB_ID", "job-0001")),
     )
-    job = job_record(
-        engine_ref=pin.engine_ref,
-        worker_revision_digest=pin.worker_revision_digest,
-        worker_job_name=pin.worker_job_name,
-        worker_container_name=pin.worker_container_name,
-        worker_args=pin.worker_args,
-        worker_env=pin.worker_env,
-        task_timeout_s=pin.task_timeout_s,
-        task_max_retries=pin.task_max_retries,
-    )
+    job = job_record(**pin.job_fields())
 
     assert WorkerPin.from_job(job) == pin
+
+
+def test_the_default_pin_sets_task_max_retries_to_zero_and_persists_it(monkeypatch):
+    # Application dispatch attempts (<=2) own retry policy; Cloud Run task-level
+    # retries default to 0 (`0` means tasks run once) and are pinned and read back.
+    monkeypatch.delenv("OCR_TASK_MAX_RETRIES", raising=False)
+    settings = OcrServiceSettings(
+        project="thaiunion-ai-platform",
+        bucket="dev-ocr-service-b",
+        worker_revision_digest=DIGEST,
+    )
+    pin = settings.pin()
+    assert pin.task_max_retries == 0
+
+    store = DurableOcrStore(InMemoryObjectStore())
+    store.create_job(job_record(**pin.job_fields()))
+    stored = store.get_job(TEAM, "job-0001")
+    assert stored is not None
+    assert stored.task_max_retries == 0
+    assert WorkerPin.from_job(stored) == pin
 
 
 @pytest.mark.parametrize(

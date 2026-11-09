@@ -682,7 +682,7 @@ launched.
 |---|---|
 | Non-final, `now < deadline_at`, `dispatch.json` absent | dispatch (crash between materialization and launch, or a lost `202`) [D28] |
 | Non-final, `now < deadline_at`, ≥5 min since last attempt, `attempts < 2`, no live lease | claim and dispatch the next attempt (`acknowledged` not consulted) |
-| Non-final, attempts exhausted, last error non-retryable | finalize `failed`/`engine_unavailable` + alert |
+| Non-final, last launch error non-retryable | finalize `failed`/`engine_unavailable` + alert (no second launch, §6.1 step 5) |
 | Non-final, `now ≥ deadline_at` | finalize `deadline_exceeded` (§3) |
 | Final job whose `job.json` still reads `accepted`/`running` | nothing to repair: readers take final state and expiry from `final.json` (D39), and the stale `state` field is never read for a decision |
 | Non-final, input absent, `now - accepted_at ≥ 5 min`, no live lease | finalize `failed`/`internal_error`, alert (reconciliation is then the `final.json` winner, so it also releases the admission entry), delete the `idem` record only at the generation read and only if it still names this `job_id` |
@@ -984,7 +984,9 @@ not catch is not detectable by the worker itself.
 - **Limits [D21/D38].** Platform facts, re-verified today: Cloud Run caps an HTTP/1 request at
   **32 MiB and the limit cannot be raised**, 60 minutes is the maximum time before a request timeout,
   and per-instance concurrency is 1000. Provisional configuration, benchmark-gated except the ceiling:
-  20 MiB upload, 500 pages/frames, 30 min per attempt (`task_timeout_s`), `task_max_retries` 2,
+  20 MiB upload, 500 pages/frames, 30 min per attempt (`task_timeout_s`), `task_max_retries` 0
+  (application dispatch attempts own retry policy; `0` means Cloud Run tasks run once without
+  uncontrolled platform retries),
   `page_timeout` 5 min, `page_retries` 1, `materialization_grace` 5 min, capacity object budget 256 KiB,
   worker parallelism 1, API `max-instances` 4, ceiling value [B3].
 - **The page cap and the per-attempt timeout are one pair, not two numbers.** 500 pages at the
@@ -1152,14 +1154,14 @@ individual user approval.
 | D11 | Embedded-text usability: PDF only, ≥1 non-whitespace char after NFC + trim, no `U+FFFD`; else `ocr`. | [DEFAULT] |
 | D12 | In-app ID-token re-verification with the official library; `Authorization` only; 60 s skew; key-fetch failure → `401`. | [DEFAULT] |
 | D13 | ~~Admission ceiling via one CAS counter, **fail-closed**; release only by the `final.json` winner; exact enumeration repair.~~ Superseded in rev 7 by D40: the enumerating repair can read low. | [DEFAULT] |
-| D14 | `task_max_retries = 2` pinned in `job.json` (D43); ≤2 dispatch attempts, ≥5 min spacing, lease check, `now < deadline_at`; non-retryable launch error → `failed`/`engine_unavailable` + alert. | [DEFAULT] |
+| D14 | `task_max_retries = 0` pinned in `job.json` (D43; tasks run once per launched execution so application dispatch attempts rather than uncontrolled platform retries govern retry policy); ≤2 dispatch attempts, ≥5 min spacing, lease check, `now < deadline_at`; non-retryable launch error → `failed`/`engine_unavailable` + alert. | [DEFAULT] |
 | D15 | Lease TTL 5 min, heartbeat 60 s; acquire = create-if-absent, expired lease taken over by CAS-replace with `fence + 1`, `412` stops the holder, release = conditional delete; checkpoints carry no fence (D41). | [DEFAULT] |
 | D16 | Result published as fence-unique `result.{fence}.json`; `final.json` arbitrates; correctness does not depend on fence-tagged resumption. Checkpoint acceptance and rewriting are governed by D41. | [DEFAULT] |
 | D17 | Bucket: soft-delete retention `0`, versioning disabled, no locks, no lifecycle rule as the deletion mechanism. | [DEFAULT] |
 | D18 | One Cloud Run Job per worker revision, image by digest; dispatch re-reads and compares image, container name, `maxRetries`, `timeoutSeconds`, and args/env (detection, not a lock); mismatch/`NOT_FOUND`/`PERMISSION_DENIED` → `failed`/`engine_unavailable` + alert; drift is alerted. | [DEFAULT] |
 | D19 | `engine_ref` is operator-only, never exposed to callers. | [DEFAULT] |
 | D20 | Allowlisted log fields only; fixed per-code error messages; no content, keys, or tokens. | [DEFAULT] |
-| D21 | Provisional limits: 500 pages, 20 MiB upload, `task_timeout_s` 30 min, `task_max_retries` 2, `page_timeout` 5 min, `page_retries` 1, `materialization_grace` 5 min, capacity object budget 256 KiB, worker parallelism 1, API `max-instances` 4, ceiling value (benchmark-gated). | [DEFAULT] |
+| D21 | Provisional limits: 500 pages, 20 MiB upload, `task_timeout_s` 30 min, `task_max_retries` 0, `page_timeout` 5 min, `page_retries` 1, `materialization_grace` 5 min, capacity object budget 256 KiB, worker parallelism 1, API `max-instances` 4, ceiling value (benchmark-gated). | [DEFAULT] |
 | D22 | Non-success finalization carries `reason` ∈ {`deadline_exceeded`, `engine_unavailable`, `input_unreadable`, `internal_error`}; `null` on success. | [DEFAULT] |
 | D23 | Text rules: per-page trim; combined = successful pages joined by `\n`; empty success `text: ""` + `no_text`; failed page `text: null` + `error_code`. | [DEFAULT] |
 | D24 | One page entry per PDF page / TIFF frame; JPEG and PNG are single-page. | [DEFAULT] |

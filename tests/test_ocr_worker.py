@@ -24,7 +24,7 @@ from app.ocr_config import OcrServiceSettings
 from app.ocr_engine import EngineRegistry
 from app.ocr_pinning import WorkerPin
 from app.ocr_reconcile import reconcile
-from app.ocr_store import DISPATCH_ATTEMPT_CAP, DISPATCH_SPACING, LEASE_TTL
+from app.ocr_store import DISPATCH_SPACING, LEASE_TTL, MATERIALIZATION_GRACE
 from app.ocr_tracer import (
     JOB_LIFETIME,
     EnginePage,
@@ -369,18 +369,14 @@ def test_a_non_retryable_launch_failure_is_finalized_once_by_reconciliation():
     )
     tracer.dispatcher.pending.clear()
 
-    # Too soon for a second attempt.
-    assert reconcile(store=tracer.store, dispatcher=tracer.dispatcher, clock=tracer.clock) == []
-    tracer.clock.advance(DISPATCH_SPACING)
-    # The second attempt is claimed and fails the same non-retryable way.
-    assert reconcile(store=tracer.store, dispatcher=tracer.dispatcher, clock=tracer.clock) == [
-        f"redispatched:{TEAM}/{job_id}"
-    ]
-    assert tracer.store.get_job(TEAM, job_id).attempts == DISPATCH_ATTEMPT_CAP
-    # Attempts exhausted with a non-retryable error: finalize, never a retry loop.
+    # §6.1 step 5: a non-retryable launch error does not retry - reconciliation
+    # finalizes `failed`/`engine_unavailable` after the first recorded failure,
+    # without waiting for the attempt spacing or launching a second attempt.
     actions = reconcile(store=tracer.store, dispatcher=tracer.dispatcher, clock=tracer.clock)
 
     assert actions == [f"finalized:engine_unavailable:{TEAM}/{job_id}"]
+    assert tracer.dispatcher.pending == []
+    assert tracer.store.get_job(TEAM, job_id).attempts == 1
     result = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result")
     assert result.status_code == 200
     assert result.json()["state"] == "failed"
@@ -408,6 +404,69 @@ def test_reconcile_finalizes_an_unfinished_job_at_its_deadline():
     # No dispatch and no recognition at or after the deadline (§5.5).
     assert tracer.dispatcher.pending == []
     assert tracer.engine.calls == []
+
+
+def test_a_job_without_its_input_waits_for_the_grace_then_finalizes_without_dispatching():
+    tracer = build()
+    job_id = submit(tracer).json()["job_id"]
+    objects = tracer.objects
+    # Crash after `job.json`, before `inputs/…` and `dispatch.json` exist (§5.6,
+    # §6.2, §9.16).
+    for name in (f"inputs/{TEAM}/{job_id}", f"jobs/{TEAM}/{job_id}/dispatch.json"):
+        _, generation = objects.read(name)
+        objects.delete(name, generation)
+    tracer.dispatcher.pending.clear()
+
+    # Inside `materialization_grace` the creator may still be uploading the input:
+    # neither dispatch the incomplete job nor finalize it under the creator.
+    tracer.clock.advance(MATERIALIZATION_GRACE - timedelta(seconds=1))
+    assert reconcile(store=tracer.store, dispatcher=tracer.dispatcher, clock=tracer.clock) == []
+    assert tracer.dispatcher.pending == []
+    assert tracer.store.get_job(TEAM, job_id).finalized_at is None
+
+    # Past the grace with no live lease: finalized `failed`/`internal_error` before
+    # any dispatch, admission released, and the `idem` record deleted conditionally
+    # so a same-key retry starts a fresh job cleanly.
+    tracer.clock.advance(timedelta(seconds=1))
+    actions = reconcile(store=tracer.store, dispatcher=tracer.dispatcher, clock=tracer.clock)
+
+    assert actions == [f"finalized:internal_error:{TEAM}/{job_id}"]
+    assert tracer.dispatcher.pending == []
+    result = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json()
+    assert (result["state"], result["reason"]) == ("failed", "internal_error")
+    assert [name for name in objects.names() if name.startswith("idem/")] == []
+
+    retried = submit(tracer)
+    assert retried.status_code == 202
+    assert retried.json()["job_id"] != job_id
+
+
+def test_a_missing_input_on_the_redispatch_path_finalizes_instead_of_redispatching():
+    tracer = build(acknowledge=False)
+    job_id = submit(tracer).json()["job_id"]
+    _, generation = tracer.objects.read(f"inputs/{TEAM}/{job_id}")
+    tracer.objects.delete(f"inputs/{TEAM}/{job_id}", generation)
+    tracer.dispatcher.pending.clear()
+    tracer.clock.advance(DISPATCH_SPACING)
+
+    # While a live lease exists, reconciliation leaves the job alone (§6.2).
+    job = tracer.store.get_job(TEAM, job_id)
+    lease = tracer.store.acquire_lease(
+        job, owner="executions/exec-1", now=tracer.clock.now()
+    )
+    assert reconcile(store=tracer.store, dispatcher=tracer.dispatcher, clock=tracer.clock) == []
+    assert tracer.dispatcher.pending == []
+
+    # Once no live lease is held, the missing-input job is finalized rather than
+    # re-dispatched for a second attempt without its input.
+    tracer.store.release_lease(job, lease)
+    actions = reconcile(store=tracer.store, dispatcher=tracer.dispatcher, clock=tracer.clock)
+
+    assert actions == [f"finalized:internal_error:{TEAM}/{job_id}"]
+    assert tracer.dispatcher.pending == []
+    assert tracer.store.get_job(TEAM, job_id).attempts == 1
+    result = tracer.client.get(f"/v1/ocr/jobs/{job_id}/result").json()
+    assert (result["state"], result["reason"]) == ("failed", "internal_error")
 
 
 def test_reconcile_leaves_a_finished_job_alone():

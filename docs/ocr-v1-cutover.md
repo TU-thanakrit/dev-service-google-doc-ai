@@ -115,7 +115,7 @@ environment-gated (7 engine-binary integration tests, 1 live GCS integration tes
 
 1. **Administrator actions** — the Artifact Registry repository plus build/upload
    permission, the bucket `roles/storage.objectAdmin` binding for
-   `tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com`, the Cloud
+   `tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com`, the Cloud
    Run Job permissions the API needs (`run.jobs.get`, `run.jobs.runWithOverrides`),
    the deployer's `iam.serviceAccountUser`, the caller's `roles/run.invoker`, and the
    token-creator grant used by the verification command. Exact commands are in

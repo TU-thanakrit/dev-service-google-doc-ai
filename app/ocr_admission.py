@@ -52,6 +52,22 @@ PER_ATTEMPT_TIMEOUT = timedelta(minutes=30)
 
 FILE_TOO_LARGE_MESSAGE = "file exceeds the size limit"
 
+# `X-Request-Id` is caller-supplied and only ever echoed in a body or logged
+# (contract §2.3), so it must be a bounded, safe token: a value outside this shape
+# (a path, a fragment, a control character) is dropped rather than passed through,
+# so no raw caller token or path can reach a response or a log line.
+REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9._:+-]{1,128}")
+
+
+def safe_request_id(value: str | None) -> str | None:
+    """The caller's correlation id when it is a bounded safe token, else `None`.
+
+    `X-Request-Id` is optional and never used for identity, dedupe, or storage; it
+    is echoed in error bodies and logged. An unusable value is omitted (its field
+    is `null`) instead of being echoed or logged verbatim.
+    """
+    return value if value and REQUEST_ID_PATTERN.fullmatch(value) else None
+
 
 @dataclass(frozen=True, slots=True)
 class AdmissionLimits:
@@ -360,7 +376,7 @@ async def _send_too_large(scope, send) -> None:
             "error": {
                 "code": "file_too_large",
                 "message": FILE_TOO_LARGE_MESSAGE,
-                "request_id": _header(scope, b"x-request-id"),
+                "request_id": safe_request_id(_header(scope, b"x-request-id")),
             },
         }
     ).encode()

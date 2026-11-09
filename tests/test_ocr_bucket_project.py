@@ -130,3 +130,26 @@ def test_the_reconcile_composition_refuses_to_start_without_a_usable_pin(recorde
 
     with pytest.raises(PinError):
         reconcile_main([])
+
+
+def test_every_role_composition_asserts_the_d32_cleanup_invariant_at_startup(
+    recorded, monkeypatch
+):
+    # Contract §10 / D32: `per_attempt_timeout + cleanup_schedule_period <= 1 h`
+    # is asserted at startup across the API, worker, reconcile, and cleanup
+    # compositions, through the shared `assert_cleanup_invariants` check.
+    monkeypatch.setenv("OCR_TASK_TIMEOUT_S", "2701")
+    monkeypatch.setenv("OCR_CLEANUP_SCHEDULE_PERIOD_S", "900")
+    monkeypatch.setattr("app.ocr_reconcile._authorized_session", lambda: object())
+    sys.modules.pop("app.ocr_api", None)
+
+    with pytest.raises(ValueError):
+        OcrServiceSettings()
+    with pytest.raises(ValueError):
+        importlib.import_module("app.ocr_api")
+    with pytest.raises(ValueError):
+        worker_main([])
+    with pytest.raises(ValueError):
+        reconcile_main([])
+    with pytest.raises(ValueError):
+        cleanup_main([])

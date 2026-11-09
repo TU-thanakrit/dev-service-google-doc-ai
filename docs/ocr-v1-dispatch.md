@@ -76,8 +76,9 @@ applies the first matching row:
 | Condition | Action |
 |---|---|
 | `now >= deadline_at` | finalize `deadline_exceeded` (never `succeeded`, D42) |
+| last launch error non-retryable | finalize `engine_unavailable` + alert (no second launch, §6.1 step 5) |
+| input absent past `materialization_grace`, no live lease | finalize `internal_error` + conditional `idem` delete (§6.2) |
 | no `dispatch.json` | create the intent and launch (crash before launch, lost `202`) |
-| attempts exhausted, last error non-retryable | finalize `engine_unavailable` + alert |
 | attempts exhausted, other | leave it: the deadline ends it |
 | live lease held | leave it |
 | else, spacing elapsed and attempts remain | claim one more attempt and launch |
@@ -149,18 +150,24 @@ then deleted it and read its unique prefix back as empty. No document content wa
 written and no bucket setting was changed. This is real bucket behaviour, not a
 fake-client result; it says nothing about the Cloud Run runtime.
 
-**Selected runtime identity and remaining blocker.** The user selected
-`tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com` as the
-existing runtime service account for this development deployment. The bucket's IAM policy carries only
-`thaiunion-shared-sandbox` project-level legacy bindings (`legacyBucketOwner` /
-`Reader`, `legacyObjectOwner` / `Reader`), so the selected service account has
-**no** object access to this bucket.
+**Selected runtime identity, caller identity, and remaining blocker.** The
+selected deployment runtime service account for the API, worker, reconcile, and
+cleanup roles is `tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com`.
+The n8n caller identity is distinct and must never be conflated with the runtime
+service account: n8n authenticates as
+`tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com` (verified
+`sub` `110367093326452748988`), mapped to its internal team in `OCR_TEAMS` as
+`tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com|110367093326452748988`.
+The bucket's IAM policy carries only `thaiunion-shared-sandbox` project-level
+legacy bindings (`legacyBucketOwner` / `Reader`, `legacyObjectOwner` / `Reader`),
+so the selected runtime service account has **no** object access to this bucket.
 The attempted `roles/storage.objectAdmin` bucket grant was denied because the
 development account lacks `storage.buckets.setIamPolicy`; read-back confirmed no
-binding was added. An administrator must bind the selected service account before a
-deployed execution can read or write durable state. Reusing this n8n runner identity
-is an explicit development choice and provides less role separation than the original
-dedicated-identity design.
+binding was added. An administrator must bind
+`tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com` before a
+deployed execution can read or write durable state. Sharing one runtime service
+account across the four OCR roles is an explicit development choice with less role
+separation than a per-role design.
 
 ## Verification (offline only)
 
@@ -206,12 +213,14 @@ An administrator must provide, at minimum:
    *Cross-project bucket*); what is still missing is object access for the runtime
    identities below.
 3. For development, use the user-selected existing service account
-   `tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com` for the
+   `tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com` for the
    API/worker/reconcile/cleanup roles. An administrator must grant it bucket
    `roles/storage.objectAdmin` and the minimum Cloud Run Job permissions needed by
-   the API (`run.jobs.get`, `run.jobs.runWithOverrides`). The user can attach this
-   account (`iam.serviceAccounts.actAs` was verified). A production deployment should
-   revisit separate least-privilege identities.
+   the API (`run.jobs.get`, `run.jobs.runWithOverrides`), and verify deployer
+   attachment (`roles/iam.serviceAccountUser`). Keep the n8n caller identity
+   (`tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com|110367093326452748988`)
+   separate as the `roles/run.invoker` caller mapped in `OCR_TEAMS`. A production
+   deployment should revisit separate least-privilege runtime identities.
 4. The Cloud Run service (private, no `allUsers`, IAM invoker only), one versioned
    Cloud Run Job per worker revision, and a Cloud Scheduler trigger for the
    reconcile and (later) cleanup jobs.

@@ -33,7 +33,7 @@ from app.ocr_admission import (
 )
 from app.ocr_config import OcrServiceSettings
 from app.ocr_reconcile import reconcile
-from app.ocr_store import CAPACITY_NAME, CAPACITY_OBJECT_BUDGET
+from app.ocr_store import CAPACITY_NAME, CAPACITY_OBJECT_BUDGET, StorageUnavailable
 from app.ocr_tracer import (
     JOB_LIFETIME,
     SCHEMA_VERSION,
@@ -222,6 +222,36 @@ def test_a_streamed_request_without_content_length_is_cut_off_at_the_ceiling():
     body = sent[1]["body"].decode()
     assert '"code": "file_too_large"' in body
     assert '"request_id": "req-42"' in body
+
+
+def test_the_size_middleware_drops_an_unsafe_request_id():
+    sent: list[dict] = []
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/ocr/jobs",
+        "headers": [
+            (b"content-length", b"4096"),
+            (b"x-request-id", b"gs://private-bucket/secret-token"),
+        ],
+        "query_string": b"",
+    }
+
+    async def downstream(scope, receive, send):
+        raise AssertionError("unreachable")
+
+    async def receive():
+        raise AssertionError("unreachable")
+
+    asyncio.run(
+        RequestSizeLimitMiddleware(downstream, max_bytes=1024)(
+            scope, receive, lambda message: _collect(sent, message)
+        )
+    )
+
+    body = json.loads(sent[1]["body"])
+    assert body["error"]["request_id"] is None
+    assert b"private-bucket" not in sent[1]["body"]
 
 
 def test_a_streamed_request_within_the_ceiling_is_replayed_whole():
@@ -522,11 +552,105 @@ def test_a_corrupt_capacity_object_fails_closed_and_admits_nothing():
     response = submit(tracer)
 
     assert_error(response, 429, "capacity_exceeded")
+    assert response.headers["Retry-After"] == "30"
     # Fail closed with no automatic rebuild (§6.4/D40): no job exists, and the object
     # an operator must repair is left exactly as it was found. The claim from §4 step 1
     # stays, so a retry after the repair materializes at the recorded job id.
     assert job_records(tracer.store.objects) == []
     assert tracer.store.objects.read(CAPACITY_NAME)[0] == b"not json at all"
+
+
+class FailingCapacityObjects(InMemoryObjectStore):
+    """Fails only on `capacity/inflight.json` reads or writes, or on another prefix."""
+
+    def __init__(self, *, fail_read=False, fail_write=False, fail_prefix=None) -> None:
+        super().__init__()
+        self.fail_read = fail_read
+        self.fail_write = fail_write
+        self.fail_prefix = fail_prefix
+
+    def read(self, name: str):
+        if self.fail_read and name == CAPACITY_NAME:
+            raise StorageUnavailable(name)
+        if self.fail_prefix and name.startswith(self.fail_prefix):
+            raise StorageUnavailable(name)
+        return super().read(name)
+
+    def create(self, name: str, payload: bytes) -> int:
+        if self.fail_write and name == CAPACITY_NAME:
+            raise StorageUnavailable(name)
+        return super().create(name, payload)
+
+    def replace(self, name: str, payload: bytes, generation: int) -> int:
+        if self.fail_write and name == CAPACITY_NAME:
+            raise StorageUnavailable(name)
+        return super().replace(name, payload, generation)
+
+
+@pytest.mark.parametrize(
+    "objects",
+    [
+        FailingCapacityObjects(fail_read=True),
+        FailingCapacityObjects(fail_write=True),
+    ],
+)
+def test_an_unreadable_or_unrecordable_capacity_object_maps_to_429_not_503(objects):
+    # Contract §2.2, §6.4/D40: when the capacity object is unreadable or an
+    # admission cannot be recorded, the submission fails closed with 429
+    # `capacity_exceeded` + `Retry-After: 30` and creates no job.
+    tracer = build(objects=objects, limits=AdmissionLimits(capacity_ceiling=1))
+
+    response = submit(tracer)
+
+    assert_error(response, 429, "capacity_exceeded")
+    assert response.headers["Retry-After"] == "30"
+    assert job_records(objects) == []
+
+
+def test_an_unrelated_storage_failure_remains_503():
+    objects = FailingCapacityObjects(fail_prefix="idem/")
+    tracer = build(objects=objects, limits=AdmissionLimits(capacity_ceiling=1))
+
+    response = submit(tracer)
+
+    assert_error(response, 503, "storage_unavailable")
+    assert response.headers["Retry-After"] == "5"
+    assert job_records(objects) == []
+
+
+def test_a_resumed_jobs_admission_expiry_uses_its_persisted_task_timeout():
+    # Accepted under the 30-minute default `task_timeout_s = 1800` (D43).
+    objects = InMemoryObjectStore()
+    first = build(objects=objects, limits=AdmissionLimits(capacity_ceiling=1))
+    job_id = submit(first, key="resume-timeout-key").json()["job_id"]
+    job = first.store.get_job(TEAM_ID, job_id)
+    assert job.task_timeout_s == 1800
+    # Drop the capacity object so the same-key retry has to re-record the
+    # non-final job's admission (§4 step 2).
+    found = objects.read(CAPACITY_NAME)
+    objects.delete(CAPACITY_NAME, found[1])
+
+    # The operator lowers the deployment's current attempt timeout to 5 minutes:
+    # the already-accepted job still runs under its pinned 30-minute timeout, so
+    # its reservation must self-expire at `deadline_at + 30 min`, not `+ 5 min`.
+    shortened = AdmissionLimits(
+        capacity_ceiling=1, per_attempt_timeout=timedelta(minutes=5)
+    )
+    restarted = build(objects=objects, limits=shortened)
+    retried = submit(restarted, key="resume-timeout-key")
+
+    assert retried.status_code == 200
+    entries = admission_entries(restarted.store)
+    assert entries[job_id]["expires_at"] == (
+        (job.deadline_at + timedelta(seconds=job.task_timeout_s))
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    # 10 minutes past the deadline is past the new 5-minute setting, but still
+    # inside the job's pinned 30-minute bound: the slot stays reserved.
+    restarted.clock.advance(JOB_LIFETIME + timedelta(minutes=10))
+    second = submit(restarted, key="resume-timeout-key-2")
+    assert_error(second, 429, "capacity_exceeded")
 
 
 def test_reconciliation_removes_a_leaked_entry_for_a_final_job():

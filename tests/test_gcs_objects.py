@@ -35,6 +35,10 @@ class FakeBlob:
         if self._bucket.after_reload is not None:
             self._bucket.after_reload(self._name)
 
+    def exists(self):
+        self._bucket.fail_if_denied(self._name)
+        return self._name in self._bucket.objects
+
     def download_as_bytes(self, if_generation_match=None):
         self._bucket.fail_if_denied(self._name)
         entry = self._bucket.objects.get(self._name)
@@ -142,6 +146,14 @@ def test_replace_and_delete_require_the_generation_read(objects):
 
 def test_missing_object_reads_as_absent(objects):
     assert objects.read("never/written") is None
+    assert objects.exists("never/written") is False
+
+
+def test_exists_checks_metadata_without_downloading_bytes(objects, bucket):
+    objects.create("inputs/team-a/job-1", b"document bytes")
+
+    assert objects.exists("inputs/team-a/job-1") is True
+    assert objects.exists("inputs/team-a/job-missing") is False
 
 
 def test_an_object_deleted_between_the_read_and_the_download_is_absent(objects, bucket):
@@ -183,6 +195,8 @@ def test_backend_denial_is_a_storage_failure_not_a_precondition(objects, bucket)
 
     with pytest.raises(StorageUnavailable):
         objects.read("anything")
+    with pytest.raises(StorageUnavailable):
+        objects.exists("anything")
     with pytest.raises(StorageUnavailable):
         objects.create("anything", b"payload")
     with pytest.raises(StorageUnavailable):
