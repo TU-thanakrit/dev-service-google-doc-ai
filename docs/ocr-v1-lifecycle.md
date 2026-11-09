@@ -1,12 +1,6 @@
 # OCR v1 — deadlines, expiry, and monitored cleanup (issue #9)
 
-Status: implemented and covered by offline tests at the approved seams; **no cloud
-behaviour is verified**. This slice implements `docs/ocr-v1-contracts.md` §3.3,
-§5.5, §6.2, §6.3, §10 and D17, D26, D32, D37, D39, D42, D44 in the parts named
-here, with the injected clock, storage fake, and fake engine only. Real GCS
-soft-delete/versioning behaviour, the deployed cleanup job, its Cloud Scheduler
-trigger, and its alert wiring are **deployment evidence, not code** ([B1], [B4]),
-so nothing here is a claim about a deployed service, and no cloud call is made.
+Status: implemented. This file records the lifecycle slice and its original offline evidence; current mutable deployment, Scheduler, bucket, and acceptance facts are authoritative only in `deploy/ocr-v1/sandbox.toml` and `verification/deployments/`. The protocol rules below remain normative where referenced by the contract.
 
 ## What changed
 
@@ -158,8 +152,7 @@ Deployment evidence still required, and not claimed by any fake-mode test:
 - the real GCS preconditions the protocol assumes ([B1]), including that a
   conditional delete against an object replaced since the read fails `412`.
 
-Provisioning remains blocked exactly as `docs/ocr-v1-dispatch.md` describes; this
-slice created no cloud resource, uploaded nothing, and made no cloud call.
+This slice originally stopped before provisioning; current deployment facts and acceptance gaps are recorded in `deploy/ocr-v1/sandbox.toml` rather than inferred from this implementation history.
 
 ## Verification (offline only)
 

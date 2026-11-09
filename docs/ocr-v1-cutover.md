@@ -1,11 +1,6 @@
 # OCR v1 — local cutover record (issue #12, code and docs only)
 
-Status: **the local/code portion of the cutover is done and verified offline; no
-cloud or n8n acceptance has been performed, and this document claims none.** The
-service is not deployed, the runtime identity's bucket access is not granted, the
-image has never been built or pushed, and no real caller has invoked anything. Every
-item below that needs a deployed resource or a deployed n8n runtime is listed as
-blocked in *Acceptance status*, not as finished.
+Status: this is the historical local cutover record. The development service was subsequently deployed; current mutable project, identity, image, URL, revision, IAM, Scheduler, and acceptance facts live only in `deploy/ocr-v1/sandbox.toml`, with read-back evidence under `verification/deployments/`. Treat the pre-deployment blockers below as audit history, not current state.
 
 Scope of this record, per the ticket's execution boundaries: source, configuration,
 documentation, an inactive workflow artifact, and administrator command blocks.
@@ -98,9 +93,11 @@ others are historical records of their own slice and should be read as such.
 The 27 tests added by this slice are green; the 8 skips are pre-existing and
 environment-gated (7 engine-binary integration tests, 1 live GCS integration test).
 
-## Acceptance status for issue #12
+## Historical acceptance status at cutover implementation
 
-| Ticket acceptance criterion | Status here |
+The table and blocker list below capture the state before deployment. Current status is in `deploy/ocr-v1/sandbox.toml` and its evidence report; unresolved items there remain n8n end-to-end verification and paid/live OCR acceptance.
+
+| Ticket acceptance criterion | Status at that time |
 |---|---|
 | Use the approved project/region, snapshot, identities, limits, storage config, spend budget; read back runtime state before testing | **Blocked.** Target and resource facts are documented (`README.md`, `docs/ocr-v1-dispatch.md`); no runtime state was read back and no budget was approved |
 | Verify n8n obtains/refreshes the intended Google identity tokens and maps to the correct team | **Blocked.** The metadata/impersonation paths and the mapping are documented (`docs/ocr-v1-n8n-workflow.md`); nothing was executed and the configuring human's identity is not assumed to be the runtime caller |
@@ -111,7 +108,7 @@ environment-gated (7 engine-binary integration tests, 1 live GCS integration tes
 | Redacted evidence ledger with deployed image/revision references, checks, attempt counts, failures, limitations | **Partially met.** This record is the offline ledger; it can carry no deployed image or revision reference because no deployment exists |
 | Complete offline tests, lint, lock checks, build verification; mark release blocked if real acceptance is unperformed | **Met offline, release marked blocked.** See the table above — required cloud and n8n acceptance is unperformed |
 
-## What closes the blocked items
+## Historical planned closure steps
 
 1. **Administrator actions** — the Artifact Registry repository plus build/upload
    permission, the bucket `roles/storage.objectAdmin` binding for

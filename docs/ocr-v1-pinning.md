@@ -1,8 +1,6 @@
 # OCR v1 — per-job engine and worker pinning, and the pre-launch template comparison (issue #11)
 
-Status: **the pinning half of issue #11 is implemented and covered by offline tests
-at the approved seams**; **no cloud behaviour is verified and deployment is still
-blocked**. This slice implements `docs/ocr-v1-contracts.md` §8, §6.1 step 2,
+Status: implemented. This file records the pinning slice and its original offline evidence; current mutable image, revision, Job, IAM, and acceptance facts are authoritative only in `deploy/ocr-v1/sandbox.toml` and `verification/deployments/`. It implements `docs/ocr-v1-contracts.md` §8, §6.1 step 2,
 §5.5's engine/checkpoint rules, §5.7's `job.json` pin fields, and D16/D18/D19/D43.
 The deadline-scoped page timeout and the lease-heartbeat renewal that also carry
 the #11 label are now implemented (`app/ocr_tracer.run_job`, `app/ocr_store`), with

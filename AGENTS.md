@@ -4,7 +4,7 @@ This repository's production entrypoint is the asynchronous OCR-only service. A 
 
 Follow `docs/ocr-service-spec.md` for scope and `docs/ocr-v1-contracts.md` for the contract. Use simple injected interfaces and test at the public API lifecycle, storage coordination, and OCR engine seams. Never weaken team isolation, content protections, conditional writes, deadline/expiry gates, or engine/configuration pinning. Fake tests are not cloud evidence.
 
-Development target: project `thaiunion-ai-platform`, account `thanakrit.boonquarmdee@thaiunion.com`, region `asia-southeast1`, resource prefix `dev-ocr-service`. Durable state is in `gs://dev-ocr-service-data-asse1-1022222817897` in project `thaiunion-shared-sandbox`. The selected development runtime identity is `tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com`; the actual n8n caller remains `tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com` and must be mapped by its verified email and subject. Bucket access and required Cloud Run Job permissions still require administrator verification/grants. Specify account/project/region explicitly and do not change global defaults. Cloud uploads, paid workload tests, GitHub pushes, and IAM changes require explicit scoped approval and budget.
+For any deployment, IAM, GCS, Scheduler, Artifact Registry, or n8n task, read `deploy/ocr-v1/sandbox.toml` first; it is the single source of truth for mutable project, identity, image, URL, revision, and acceptance facts. The matching redacted read-back is under `verification/deployments/`. Specify account/project/region explicitly and do not change global defaults. Cloud uploads, paid workload tests, GitHub pushes, and IAM changes require explicit scoped approval and budget.
 
 ## Repository map
 
@@ -36,11 +36,11 @@ Development target: project `thaiunion-ai-platform`, account `thanakrit.boonquar
 
 ```bash
 uv sync --python 3.12
-uv lock --check
-uv run python -m pytest -o addopts='' -q
-uv run ruff check .
+uv run python scripts/check.py
 uv run uvicorn app.ocr_api:app --reload
 ```
+
+`scripts/check.py` is the canonical local gate: lockfile, Ruff, and pytest with an authoritative JUnit count. CI runs the same gate, then builds the production container and verifies `/health` plus clean SIGTERM shutdown.
 
 Fake-mode lifecycle checks, which must not import cloud clients:
 
@@ -86,10 +86,10 @@ uv export --frozen --no-dev --format requirements-txt --no-hashes --output-file 
 
 ## Pitfalls
 
-- The bucket is cross-project: `OCR_PROJECT=thaiunion-ai-platform`, while `OCR_BUCKET_PROJECT=thaiunion-shared-sandbox`.
-- The selected development service account does not yet have verified sandbox-bucket object access. Do not claim deployment ready until IAM read-back and a runtime test pass.
-- The DEV engine is Tesseract 4.1.1 from a synthetic benchmark; the Debian container may install Tesseract 5.x. Production accuracy, version skew, and licensing evidence remain open.
+- Deployment facts change independently of source code; trust `deploy/ocr-v1/sandbox.toml` and its named evidence report, not old design/cutover prose.
+- The current development deployment uses a broad shared default Compute Engine service account; the manifest marks this production security debt.
+- The DEV engine is benchmark-gated; production accuracy, version skew, and licensing evidence remain open.
 - Upload/page/capacity defaults are conservative development bounds, not production throughput claims.
 - `app/main.py` and `scripts/serve_with_gcloud.py` are historical. Do not use them in new runbooks or deployment commands.
-- No GitHub Actions workflow exists; local lock, pytest, Ruff, demos, approved cloud gates, and n8n acceptance are distinct checks.
+- GitHub Actions runs the deterministic local gate and container smoke only; approved cloud gates, paid OCR, and n8n acceptance remain separate checks.
 - This checkout tracks `TU-thanakrit/dev-service-google-doc-ai`; the corporate copy under `tu-ai-platform/assets/ocr` is separate. Do not synchronize or push between them without explicit instruction.

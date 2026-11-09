@@ -1,6 +1,6 @@
 # Shared asynchronous OCR service — v1 specification
 
-Status: product scope and ticket breakdown confirmed by the user. The approved tickets are published as GitHub issues #1–#12 in TU-thanakrit/dev-service-google-doc-ai by TU-thanakrit. Technical design and testing proposals below require review; this is not approval to implement, provision, deploy, upload documents, or incur cloud costs.
+Status: product scope and ticket breakdown confirmed by the user. Implementation and a private development deployment followed this specification. Mutable project, identity, image, URL, revision, and acceptance facts are authoritative only in `deploy/ocr-v1/sandbox.toml`; this document retains product requirements and historical planning decisions.
 
 ## Problem Statement
 
@@ -48,7 +48,7 @@ Processing capacity is shared, while each team's jobs and documents remain isola
 
 - Replace expense-processing behavior with OCR-only behavior. Classification, Gemini calls, and structured business-field extraction are not part of the new processing path.
 - Use a Cloud Run HTTP API and separate Cloud Run Jobs OCR workers. Do not perform durable OCR work in an untracked background task inside the API process.
-- The user restored development/testing to project `thaiunion-ai-platform`, account `thanakrit.boonquarmdee@thaiunion.com`, region `asia-southeast1`. New resource names use literal prefix `dev-ocr-service`. Set account, project, and region explicitly; never rely on ambient CLI defaults. Read-only permission checks show Cloud Run service/job create and update access, but not a complete build, image-upload, bucket-create, service-account attachment, or private-IAM path. Verify exact resource-level permissions and obtain any missing administrator actions before provisioning.
+- Deployment resources use the literal prefix `dev-ocr-service`. Set account, project, and region explicitly; never rely on ambient CLI defaults. The current development target and verified resource state are recorded only in `deploy/ocr-v1/sandbox.toml`.
 - Use GCS for application data and job metadata initially; no database is selected for v1. Cloud SQL is a possible future metadata backend.
 - Permit managed dispatch/scheduling services. Dispatch acceptance is not evidence of worker start or OCR success. Exact services and recovery protocol remain open.
 - Keep inputs within organization-controlled processing/storage. Use GCP identity and Cloud Run IAM initially; Microsoft Entra integration is deferred.
@@ -115,9 +115,9 @@ These are proposed testing interfaces, pending user confirmation, not tests alre
 2. Specify dispatch, bounded global capacity, GCS state/claim/idempotency protocols, worker revision pinning, and recovery/cancellation behavior.
 3. Verify the n8n runtime identity/token path and define verified caller-to-team mapping.
 4. Freeze exact result/error contracts, embedded-text checks, retry policy, file/page limits, and overload behavior.
-5. Use project `thaiunion-ai-platform`, account `thanakrit.boonquarmdee@thaiunion.com`, region `asia-southeast1`, and new-resource prefix `dev-ocr-service`. Agree resource/spend boundaries and verify resource-level build, image, service-account, IAM, bucket, and runtime permissions before provisioning.
+5. Use explicit account, project, region, and `dev-ocr-service` resource names from the deployment manifest. Agree resource/spend boundaries and verify resource-level build, image, service-account, IAM, bucket, and runtime permissions before provisioning.
 6. Define cleanup alerting, soft-delete/versioning/recovery policy, operational-log retention, and acceptance evidence.
 
-The confirmed scope is not a claim that the architecture is fully resolved. Technical proposals and test interfaces require review before implementation. The user selected GitHub repository TU-thanakrit/dev-service-google-doc-ai and account TU-thanakrit for ticket publication. The 12 approved tickets were published with the ready-for-agent label, acceptance criteria, explicit blocking references, and 16 native blocking relationships; their authors, bodies, labels, open states, and dependency sets were read back and verified. Issues #1 and #2 have no blockers. The standalone specification itself has not been committed or pushed.
+This section records the original planning gate. Current implementation and deployment acceptance status is tracked in the contract and deployment manifest; unresolved live gaps remain n8n end-to-end identity/token verification, real-engine accuracy, and an approved paid document campaign.
 
 Ticket list: https://github.com/TU-thanakrit/dev-service-google-doc-ai/issues?q=is%3Aissue%20label%3Aready-for-agent

@@ -1,0 +1,104 @@
+schema_version = 1
+environment = "development"
+status = "deployed"
+recorded_at = "2026-11-09T20:45:50+07:00"
+
+[scope]
+project = "thaiunion-shared-sandbox"
+project_number = "1022222817897"
+region = "asia-southeast1"
+deployer = "thanakrit.boonquarmdee@thaiunion.com"
+resource_prefix = "dev-ocr-service"
+
+[source]
+branch = "integration/ocr-service-v1"
+commit = "0b4a8f8ac536bb51e7e608ade733b9d895ca1b14"
+build_context_sha256 = "722e6d7619954f4231ce0baa8472313051611a6305abe535e8e0eff37203f50c"
+
+[build]
+cloud_build_id = "c58a9cdd-d909-4a94-bd47-c1ff85df31a7"
+status = "SUCCESS"
+repository = "asia-southeast1-docker.pkg.dev/thaiunion-shared-sandbox/dev-ocr-service"
+image = "asia-southeast1-docker.pkg.dev/thaiunion-shared-sandbox/dev-ocr-service/ocr-service@sha256:fbe7c282d72e040199cdde770a1dd219be289b1b01e1e39d8dcf55059a03917e"
+digest = "sha256:fbe7c282d72e040199cdde770a1dd219be289b1b01e1e39d8dcf55059a03917e"
+vulnerability_scanning = false
+
+[identity]
+runtime = "1022222817897-compute@developer.gserviceaccount.com"
+scheduler = "1022222817897-compute@developer.gserviceaccount.com"
+n8n_caller_email = "tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com"
+n8n_caller_subject = "110367093326452748988"
+n8n_team = "team-dev"
+
+[security]
+production_ready = false
+runtime_identity_least_privilege = false
+runtime_identity_risk = "default Compute Engine service account has roles/editor and roles/storage.admin"
+artifact_vulnerability_scanning = false
+
+[storage]
+bucket = "dev-ocr-service-data-asse1-1022222817897"
+bucket_project = "thaiunion-shared-sandbox"
+location = "ASIA-SOUTHEAST1"
+uniform_bucket_level_access = true
+soft_delete_retention_seconds = 0
+object_versioning = false
+public_access_prevention = "inherited"
+
+[service]
+name = "dev-ocr-service-api"
+client_url = "https://dev-ocr-service-api-1022222817897.asia-southeast1.run.app"
+platform_url = "https://dev-ocr-service-api-d7e7r5lv7a-as.a.run.app"
+audience = "https://dev-ocr-service-api-1022222817897.asia-southeast1.run.app"
+ready_revision = "dev-ocr-service-api-00003-ghw"
+private = true
+min_instances = 0
+max_instances = 1
+concurrency = 10
+cpu = "1"
+memory = "512Mi"
+timeout_seconds = 300
+startup_cpu_boost = false
+
+[worker]
+name = "dev-ocr-service-worker-fbe7c282d72e"
+container = "worker"
+command = ["python", "-m", "app.ocr_worker"]
+timeout_seconds = 1800
+max_retries = 0
+cpu = "1"
+memory = "1Gi"
+pin_verified = true
+
+[reconcile]
+name = "dev-ocr-service-reconcile"
+command = ["python", "-m", "app.ocr_reconcile"]
+timeout_seconds = 1800
+max_retries = 0
+schedule = "*/5 * * * *"
+time_zone = "Asia/Bangkok"
+first_execution = "dev-ocr-service-reconcile-tgtft"
+first_execution_status = "EXECUTION_SUCCEEDED"
+
+[cleanup]
+name = "dev-ocr-service-cleanup"
+command = ["python", "-m", "app.ocr_cleanup"]
+timeout_seconds = 1800
+max_retries = 0
+schedule = "*/15 * * * *"
+time_zone = "Asia/Bangkok"
+first_execution = "dev-ocr-service-cleanup-tq989"
+first_execution_status = "EXECUTION_SUCCEEDED"
+
+[acceptance]
+deployed_source_total_tests = 423
+deployed_source_tests_passed = 415
+deployed_source_environment_gated_skipped = 8
+unauthenticated_health_status = 403
+authenticated_health_status = 200
+paid_ocr_requests = 0
+n8n_end_to_end_verified = false
+real_engine_accuracy_verified = false
+
+[evidence]
+report = "verification/deployments/2026-11-09-thaiunion-shared-sandbox.md"

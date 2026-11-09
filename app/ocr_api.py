@@ -12,9 +12,9 @@ the first non-health request (`_LazyDurableStore`, `_LazyAuthorizedSession`), so
 importing `app.ocr_api` and serving `GET /health` construct neither ADC nor a GCS
 client (contract §2.1, §11.2 #28).
 
-Nothing here is verified cloud behaviour: deployment is blocked
-(docs/ocr-v1-dispatch.md), and the ID-token path and IAM remain evidence gaps
-(docs/ocr-v1-contracts.md, B2).
+Mutable live resource and acceptance facts are recorded in
+`deploy/ocr-v1/sandbox.toml`. A private development deployment exists; n8n
+end-to-end identity/token acceptance and paid/live OCR accuracy remain open.
 """
 
 from typing import Any

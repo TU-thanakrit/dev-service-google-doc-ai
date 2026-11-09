@@ -1,8 +1,6 @@
 # OCR v1 — real CPU engine adapter: Thai/English text and embedded PDF text (issue #7)
 
-Status: **implemented and covered by offline tests plus one env-gated local run
-against the real binaries**; **no cloud behaviour and no production accuracy are
-claimed**. This slice implements the recognition half of
+Status: implemented and benchmarked locally. Current mutable deployment and acceptance facts are authoritative only in `deploy/ocr-v1/sandbox.toml` and `verification/deployments/`; this file remains the engine-adapter and benchmark record, not a live-resource inventory. It implements
 `docs/ocr-v1-contracts.md` §2.6 (`text_source`, warnings, per-page accounting),
 §5.5/D41 (per-page recognition), §11.2 S3, and D11/D23/D24. It replaces the
 deterministic placeholder engine in the worker entrypoint; it adds no

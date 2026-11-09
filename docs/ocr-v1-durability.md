@@ -1,10 +1,6 @@
 # OCR v1 — durable submission and idempotency (issue #4)
 
-Status: implemented and covered by offline tests at the approved seams; **real GCS
-behaviour is unverified** and the cloud integration test is blocked (see below).
-It implements the approved protocol in `docs/ocr-v1-contracts.md` §3.3–§5.4 only
-for the parts listed here; nothing in this document is a claim about deployed
-behaviour.
+Status: implemented. This file records the original offline durability slice and its then-open cloud gate; current mutable deployment and real-GCS evidence is authoritative only in `deploy/ocr-v1/sandbox.toml` and `verification/deployments/`.
 
 ## What is durable now
 
@@ -95,8 +91,4 @@ Offline only:
 These use deterministic in-memory objects with generations and 412s. **They are
 not evidence of real GCS concurrency behaviour.**
 
-Blocked: `tests/test_ocr_gcs_integration.py` is skipped until an administrator
-provisions a bucket named `dev-ocr-service-*` in `thaiunion-ai-platform` and
-grants object-level permissions for the test identity. The current account cannot
-create a bucket and no unrelated bucket may be reused, so no live object call has
-been made.
+Historical note: this slice originally stopped before a real-GCS probe. The current bucket and deployment read-back are recorded in `deploy/ocr-v1/sandbox.toml`; the manifest still marks document/OCR acceptance and several real protocol campaigns as incomplete.

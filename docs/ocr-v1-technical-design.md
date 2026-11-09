@@ -1,10 +1,6 @@
-> **SUPERSEDED — do not implement from this file.** rev 6 replaced it with
-> `docs/ocr-v1-contracts.md`, which governs wherever the two disagree; §0 there lists the
-> contradictions resolved. This rev 5 text is kept only for its revision log, its reference notes,
-> and the audit trail of what was corrected. Three of its facts are stale: its header names the
-> corporate target `thaiunion-ai-platform` although the approved development target is the personal
-> project `proud-quasar-351116`; the draft rules and tests it points at are deliberately uncommitted;
-> and its blocker/approval status is superseded by rev 6 §1.1 and §13.
+> **SUPERSEDED — do not implement or deploy from this file.** rev 6 replaced it with
+> `docs/ocr-v1-contracts.md`; current mutable deployment facts are authoritative only in
+> `deploy/ocr-v1/sandbox.toml`. This rev 5 text is retained solely as design/audit history.
 
 # OCR v1 — technical design (rev 5, SUPERSEDED draft)
 

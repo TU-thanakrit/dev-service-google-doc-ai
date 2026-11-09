@@ -1,11 +1,7 @@
 # OCR v1 — implementation-ready contract (rev 7, corrected by the independent protocol review)
 
 Issue: `TU-thanakrit/dev-service-google-doc-ai` #1 *OCR v1: freeze contracts and recovery design*.
-Worktree `/home/danny/service_google_doc_ai/.worktrees/ocr-v1-contracts`, branch
-`task/ocr-v1-contracts`. Current development/testing target: project `thaiunion-ai-platform`, account
-`thanakrit.boonquarmdee@thaiunion.com`, region `asia-southeast1`, new-resource prefix
-`dev-ocr-service`. The user restored this target after a temporary personal-project plan; exact
-resource-level deployment permissions remain evidence to verify.
+This file is the normative product/protocol contract. Mutable deployment facts are not part of that contract and live only in `deploy/ocr-v1/sandbox.toml`; the matching read-back is under `verification/deployments/`. Older project and permission references retained later in this document are historical evidence, not current configuration.
 
 rev 6 replaced the rev 5 draft (`docs/ocr-v1-technical-design.md`), which is kept as history and marked
 superseded. That replacement added no capability: every change was a contract correction, a removed
@@ -33,11 +29,7 @@ Reading order: **§1–§8 are the normative contract** (what to build, and what
 **§0 and §9–§15 are informative** — change log, race review, test list, decision/veto table,
 evidence gaps, references. If you want the short version, §2–§8 is it (~600 lines).
 
-**Approval and verification status.** The user approved the technical design in this document and the
-testing seams S1–S3, and requested implementation (§1.1). Nothing cloud-side is verified: no cloud
-call, no GCP write, no paid run, no deployment, no push, and no resource exists — B1–B4 remain evidence
-blockers (§13). Verified locally for the design commit, and unchanged by rev 7 (which edits this document
-only): `uv run pytest -q` → **66 passed** (the 30 existing tracked tests plus the 36 uncommitted draft
+**Approval and verification status at contract freeze.** The user approved the technical design and testing seams S1–S3 and requested implementation (§1.1). The cloud statements and B1–B4 rows in this section record evidence gaps at that time; current deployment and acceptance facts are authoritative only in `deploy/ocr-v1/sandbox.toml`. The design commit was verified locally, and rev 7 changed only this document: `uv run pytest -q` → **66 passed** (the 30 existing tracked tests plus the 36 uncommitted draft
 tests of §11.1) and `uv run ruff check .` → clean. The 30 existing tests are baseline evidence for the
 *old* synchronous app, not evidence that this design works; the 36 draft tests encode rev 6 rules and are
 stale under rev 7 (§11.1). Three load-bearing Google Cloud facts were re-read while drafting (request

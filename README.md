@@ -12,10 +12,7 @@ Roles: a private Cloud Run **service** (`app/ocr_api.py`) and separate Cloud Run
 job metadata live in GCS. Callers authenticate with Google identity; anonymous
 access is denied.
 
-**Status: not deployed, and not claimed to be.** Nothing here is verified cloud
-behaviour — the service, jobs, bucket IAM, and the n8n token path remain
-unverified evidence (`docs/ocr-v1-contracts.md` B1–B4, `docs/ocr-v1-cutover.md`).
-Offline tests and the fake-mode demos below are all that has been executed.
+**Status:** the development deployment is live and private in GCP. The authoritative mutable resource, identity, image, URL, revision, and acceptance facts are in `deploy/ocr-v1/sandbox.toml`; its redacted read-back is under `verification/deployments/`. Local/fake checks and live acceptance remain separate.
 
 ## API
 
@@ -34,7 +31,7 @@ ownership and idempotency — is `docs/ocr-v1-contracts.md` §2.
 
 ```bash
 TOKEN=$(gcloud auth print-identity-token \
-  --impersonate-service-account="$RUNTIME_SA" \
+  --impersonate-service-account="$CALLER_SA" \
   --audiences="$SERVICE_URL")
 
 # submit
@@ -64,9 +61,10 @@ borrow a team. A key without both claims fails at startup.
 
 ```bash
 uv sync --python 3.12
-uv run pytest
-uv run ruff check .
+uv run python scripts/check.py
 ```
+
+That command is the canonical local gate: it checks the lockfile, runs Ruff, executes pytest, and prints authoritative JUnit totals. GitHub Actions runs the same gate and then verifies the production container's liveness and graceful shutdown.
 
 Fake-mode demos run the whole lifecycle in one process with injected fakes, spend
 no quota, and fail if a cloud client module is imported:
@@ -79,160 +77,40 @@ uv run python -m scripts.ocr_worker_demo   # dispatch -> worker -> reconcile rec
 `.env.example` holds the `OCR_*` settings every role reads (`app/ocr_config.py`,
 contract §8). Copy it to `.env` for local work; `.env` is git-ignored.
 
-## GCP target
+## Deployment
 
-| Fact | Value | Status |
-|---|---|---|
-| Account (development) | `thanakrit.boonquarmdee@thaiunion.com` | — |
-| Service project | `thaiunion-ai-platform` | target |
-| Region | `asia-southeast1` | target |
-| New-resource prefix | `dev-ocr-service` | target |
-| Durable bucket | `gs://dev-ocr-service-data-asse1-1022222817897` | exists; settings read back (soft-delete retention `0`, uniform bucket-level access) |
-| Bucket project | `thaiunion-shared-sandbox` | exists |
-| Selected runtime service account | `tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com` | exists; **no bucket object access granted** |
-| n8n caller identity (`OCR_TEAMS`) | `tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com\|110367093326452748988` | caller/team mapping only; distinct from the runtime service account |
+The authoritative development deployment record is `deploy/ocr-v1/sandbox.toml`.
+Read that manifest instead of copying mutable project, identity, image, revision,
+URL, IAM, or schedule values from prose. The matching read-back evidence is
+`verification/deployments/2026-11-09-thaiunion-shared-sandbox.md`.
 
-The bucket is in its own project and the service is not: `OCR_BUCKET_PROJECT`
-carries the bucket's project into every role's store, while dispatch still
-addresses Cloud Run jobs in `OCR_PROJECT`.
+Current high-level posture:
 
-## Deploy
+- private Cloud Run API plus version-pinned worker, reconciliation, and cleanup Jobs;
+- GCS-only durable state in the same development project;
+- n8n caller identity distinct from the broad development runtime identity;
+- reconciliation every five minutes and cleanup every fifteen minutes;
+- no paid/live OCR request or n8n end-to-end acceptance yet.
 
-The container runs `uvicorn app.ocr_api:app --host 0.0.0.0 --port ${PORT}` (the
-`CMD` in `Dockerfile`), so the OCR API is what a deployed service starts; the
-worker, reconcile, and cleanup jobs override that command (`python -m
-app.ocr_worker`, `python -m app.ocr_reconcile`, `python -m app.ocr_cleanup`).
-`docs/ocr-v1-dispatch.md` lists the roles, their Cloud Run kind, and their
-environment.
+The immutable image serves `app.ocr_api:app` by default; worker, reconciliation, and cleanup Jobs override that command. The manifest's `source.commit` identifies the code used to build the deployed image. Documentation- or CI-only commits made later do not change that image. Update the manifest only after reading the exact external resources back.
+
+For an approved live document test, use the client URL and caller identity from
+the manifest:
 
 ```bash
-gcloud run deploy dev-ocr-service-api \
-  --project thaiunion-ai-platform \
-  --region asia-southeast1 \
-  --source . \
-  --command uvicorn \
-  --args app.ocr_api:app,--host,0.0.0.0,--port,8080 \
-  --service-account tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
-  --no-allow-unauthenticated \
-  --max-instances 4 --memory 512Mi --cpu 1 \
-  --set-env-vars '^@^OCR_PROJECT=thaiunion-ai-platform@OCR_REGION=asia-southeast1@OCR_BUCKET=dev-ocr-service-data-asse1-1022222817897@OCR_BUCKET_PROJECT=thaiunion-shared-sandbox@OCR_API_AUDIENCE=https://dev-ocr-service-api-REPLACE.a.run.app@OCR_TEAMS={"tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com|110367093326452748988":"team-dev"}@OCR_WORKER_REVISION_DIGEST=sha256:REPLACE@OCR_TASK_TIMEOUT_S=1800@OCR_TASK_MAX_RETRIES=0'
-```
-
-`^@^` is the environment-variable delimiter, chosen because `OCR_TEAMS` and the
-pin values contain commas. Instance sizing (`--max-instances`, memory, CPU,
-timeouts) carries the provisional shape of contract §10 and is not a benchmark
-result; the upload cap, page limit, timeout pair, and capacity ceiling stay gated
-on the CPU benchmark (`docs/ocr-v1-benchmark-report.md`).
-
-The API service alone does not process anything: one versioned Cloud Run Job per
-worker revision (`dev-ocr-service-worker-<slug>`), the reconcile and cleanup jobs,
-and their Cloud Scheduler triggers are described in `docs/ocr-v1-dispatch.md` and
-`docs/ocr-v1-lifecycle.md`.
-
-## Deployment prerequisites — administrator actions
-
-Read-only permission checks on `thanakrit.boonquarmdee@thaiunion.com` in
-`thaiunion-ai-platform` did **not** return a complete build, image-upload,
-bucket-create, private-IAM, or service-account-attachment path. The commands
-below are the missing administrator actions; **none of them has been run, no
-grant is claimed, and the deployment above cannot succeed until they are**
-(`docs/ocr-v1-dispatch.md`, `docs/ocr-v1-cutover.md`).
-
-```bash
-# 1. Build + image upload (currently denied: artifactregistry.repositories.uploadArtifacts).
-#    A repository that can hold the worker image by immutable digest, with cleanup
-#    policies that never delete a pinned digest.
-gcloud artifacts repositories create dev-ocr-service \
-  --project thaiunion-ai-platform --location asia-southeast1 \
-  --repository-format docker \
-  --description 'OCR v1 API and worker images'
-gcloud artifacts repositories add-iam-policy-binding dev-ocr-service \
-  --project thaiunion-ai-platform --location asia-southeast1 \
-  --member user:thanakrit.boonquarmdee@thaiunion.com \
-  --role roles/artifactregistry.writer
-gcloud projects add-iam-policy-binding thaiunion-ai-platform \
-  --member user:thanakrit.boonquarmdee@thaiunion.com \
-  --role roles/cloudbuild.builds.editor
-
-# 2. Bucket IAM for the selected runtime identity (currently absent, and the
-#    attempt to add it was denied for want of storage.buckets.setIamPolicy).
-gcloud storage buckets add-iam-policy-binding \
-  gs://dev-ocr-service-data-asse1-1022222817897 \
-  --member serviceAccount:tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
-  --role roles/storage.objectAdmin
-
-# 3. Cloud Run Job permissions the API needs to read the pinned template and
-#    launch it (contract §6.1: run.jobs.get, run.jobs.runWithOverrides).
-gcloud iam roles create dev_ocr_service_dispatch \
-  --project thaiunion-ai-platform --title 'OCR v1 dispatch' \
-  --permissions run.jobs.get,run.jobs.run,run.jobs.runWithOverrides,run.operations.get
-gcloud projects add-iam-policy-binding thaiunion-ai-platform \
-  --member serviceAccount:tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
-  --role projects/thaiunion-ai-platform/roles/dev_ocr_service_dispatch
-
-# 4. Deployer attachment and the token path used by the verification command.
-gcloud iam service-accounts add-iam-policy-binding \
-  tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
-  --member user:thanakrit.boonquarmdee@thaiunion.com \
-  --role roles/iam.serviceAccountUser
-gcloud iam service-accounts add-iam-policy-binding \
-  tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
-  --member user:thanakrit.boonquarmdee@thaiunion.com \
-  --role roles/iam.serviceAccountTokenCreator
-
-# 5. The caller identity (n8n, or a person for a manual call) may invoke the
-#    private service, and no one else may.
-gcloud run services add-iam-policy-binding dev-ocr-service-api \
-  --project thaiunion-ai-platform --region asia-southeast1 \
-  --member serviceAccount:tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com \
-  --role roles/run.invoker
-```
-
-`tu-ai-platform-sa@thaiunion-ai-platform.iam.gserviceaccount.com` is the selected
-deployment runtime identity for the API, worker, reconcile, and cleanup roles;
-`tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com` (subject
-`110367093326452748988`) is the n8n caller identity mapped in `OCR_TEAMS`. Keep
-caller and runtime identities distinct; sharing one runtime service account across
-the four OCR roles is an explicit development choice that a production deployment
-should revisit.
-
-Bucket settings to read back before any run (contract D17: versioning **disabled**,
-soft-delete retention `0`, no locks):
-
-```bash
-gcloud storage buckets describe gs://dev-ocr-service-data-asse1-1022222817897 \
-  --format='yaml(softDeletePolicy,versioning,iamConfiguration)'
-```
-
-## Verification
-
-`scripts/verify_ocr_service.py` runs the asynchronous lifecycle end to end against
-a deployed service — submit, poll, retrieve the result — and fails unless every
-input returns a result body whose result and page keys, types, page numbering,
-completeness, and text join match the contract exactly.
-
-```bash
-SERVICE_URL=$(gcloud run services describe dev-ocr-service-api \
-  --project thaiunion-ai-platform --region asia-southeast1 \
-  --format='value(status.url)')
+SERVICE_URL="<client_url from deploy/ocr-v1/sandbox.toml>"
+CALLER_SA="<n8n_caller_email from deploy/ocr-v1/sandbox.toml>"
 
 uv run python -m scripts.verify_ocr_service \
   --base-url "$SERVICE_URL" \
-  --file document.pdf \
+  --file /absolute/path/to/approved-document.pdf \
   --gcloud-auth \
-  --impersonate tu-ai-n8n-dev-runner-sa@thaiunion-ai-platform.iam.gserviceaccount.com
+  --impersonate "$CALLER_SA"
 ```
 
-`--gcloud-auth` mints an ID token with `aud` = `--base-url` through the
-impersonation path above, so the token matches `OCR_API_AUDIENCE`. Every run
-consumes real OCR work and quota, so run it only under an approved document and
-spend budget. The report contains metadata and key names only; `--include-responses`
-additionally stores full OCR text and must be used only for an explicitly approved
-local evidence run, because that text may be sensitive.
-
-Local/fake acceptance is not cloud acceptance: fake-engine success in `uv run
-pytest` says nothing about the deployed service, its IAM, or the real n8n token
-path.
+Every document submission can consume real OCR work. Use zero automatic retries
+and an explicitly approved document/spend budget. Default reports are redacted;
+full OCR responses require separate approval and access-controlled storage.
 
 ## Historical code (pre-OCR v1)
 

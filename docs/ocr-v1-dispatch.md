@@ -1,9 +1,6 @@
 # OCR v1 — dispatch and private worker execution (issue #6)
 
-Status: implemented and covered by offline tests at the approved seams; **no cloud
-behaviour is verified and deployment is blocked** (see *Deployment* below). This
-slice adds the dispatch, worker, and reconciliation path around the durable store
-of issue #4, using the fake engine only. It implements
+Status: implemented. This document preserves the dispatch protocol and pre-deployment audit history; current mutable deployment facts are authoritative only in `deploy/ocr-v1/sandbox.toml`, with read-back evidence under `verification/deployments/`. Do not use the older target/IAM blocker text below as live configuration. It implements
 `docs/ocr-v1-contracts.md` §5.3, §5.4, §5.5, and §6.1–§6.2 in the parts named
 here and nothing more.
 
@@ -187,9 +184,9 @@ separation than a per-role design.
 These are fake-client tests. They are **not** evidence of real GCS concurrency,
 the real Cloud Run Jobs runtime, or `jobs:run` IAM ([B1], [B2]).
 
-## Deployment
+## Historical pre-deployment blockers
 
-**Blocked.** The development account
+**Historical state at implementation time.** The development account
 `thanakrit.boonquarmdee@thaiunion.com` in project `thaiunion-ai-platform`
 (region `asia-southeast1`, prefix `dev-ocr-service`) cannot perform the steps a
 real private execution needs, and no unrelated existing service account, bucket,
