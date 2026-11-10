@@ -39,9 +39,7 @@ ownership and idempotency — is `docs/ocr-v1-contracts.md` §2.
 For a direct private-backend client, see `docs/ocr-v1-n8n-workflow.md` and
 `scripts/verify_ocr_service.py`. The latter performs live submissions and an
 idempotent replay, so it requires explicit approval for its complete request
-budget. The Postman user guide was previously placed in `GUIDE.md`, but that file
-was absent during the wrap-up inspection. Restore it from the earlier session or
-ask the owner before publishing a link.
+budget. For the facade's Postman walkthrough, see `GUIDE.md`.
 
 The token must be a Google-signed ID token whose `aud` is exactly
 `OCR_API_AUDIENCE` (the service URL) and whose identity holds

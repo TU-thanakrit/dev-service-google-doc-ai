@@ -29,11 +29,11 @@ Inspection snapshot: 10 November 2026, `feature/ocr-key-api` on base `496e16d`. 
 
 ## Build, configuration, and mock inventory
 
-- [ ] The facade source, tests, deployment manifest, and evidence are untracked in this worktree. They cannot be reconstructed from base commit `496e16d` alone. Preserve and review them; commit/push only if explicitly authorized.
+- [ ] The facade was deployed from an uncommitted snapshot. Its source, tests, and evidence were later committed in `cb17233`; base commit `496e16d` alone does not reproduce that snapshot. Verify source and build-context hashes before any rebuild or redeployment.
 - [ ] `Dockerfile.key-proxy` copies `app/` and installs root `requirements.txt`. The recorded deployment used a small allowlisted build context. A repository-root build is not equivalent and may include unnecessary code/dependencies. Add a reproducible build-context script and consider a minimal dependency set.
 - [ ] The facade is fixed to the single development backend URL (`PRODUCTION_BACKEND_URL` in `app/ocr_key_proxy.py`; despite its name, it is a development service). Make any change to the fixed-origin boundary deliberate and test exact audience, URL validation, and token handling.
 - [ ] `app/ocr_tracer_fakes.py`, fake engines/stores, local token providers, tests, and synthetic PDFs are intentional test fixtures, not live implementations. Keep them separate from production entrypoints. Sample keys in `.env.example`, README, and tests are placeholders and must never be deployed as secrets.
-- [ ] Check whether `GUIDE.md` is present before linking or committing it. It was moved to the worktree during this session but was absent at the wrap-up inspection; do not silently assume it remains available.
+
 
 ## Other error handling and lifecycle considerations
 

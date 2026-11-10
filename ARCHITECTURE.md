@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the repository and the `feature/ocr-key-api` worktree as inspected on 10 November 2026. The facade files are untracked on base commit `496e16d78a1c3cca891119965fe5e97e0e1f466c`; that commit alone does not reproduce the facade. The authoritative deployment records are `deploy/ocr-v1/sandbox.toml` and `deploy/ocr-key-api/sandbox.toml`. Read external resources again before acting on recorded state.
+This document describes the repository and the `feature/ocr-key-api` worktree as inspected on 10 November 2026. The facade was deployed from an uncommitted snapshot based on `496e16d78a1c3cca891119965fe5e97e0e1f466c` and later committed as `cb17233`; the base commit alone does not reproduce it. The authoritative deployment records are `deploy/ocr-v1/sandbox.toml` and `deploy/ocr-key-api/sandbox.toml`. Read external resources again before acting on recorded state.
 
 ## System boundaries
 
