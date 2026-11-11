@@ -1,0 +1,83 @@
+schema_version = 1
+environment = "development"
+status = "deployed"
+recorded_at = "2026-11-10T00:25:00+07:00"
+production_ready = false
+
+[scope]
+project = "thaiunion-shared-sandbox"
+project_number = "1022222817897"
+region = "asia-southeast1"
+service = "dev-ocr-demo-web"
+
+[source]
+branch = "feature/ocr-demo-ui"
+base_commit = "496e16d"
+working_tree_committed = false
+build_context_sha256 = "9eb9117a182cbe2de2c817d4e1e3180a733d38ddbc4140fbe14cd5d645d6c8e3"
+build_context_files = ["Dockerfile", "requirements.txt", "app/__init__.py", "app/ocr_demo.py", "app/ocr_demo_entrypoint.py"]
+dockerfile_source = "Dockerfile.demo copied to Dockerfile in staged context"
+
+[build]
+cloud_build_id = "f6ec6ef5-167c-4998-a768-db2599c47d3e"
+status = "SUCCESS"
+repository = "asia-southeast1-docker.pkg.dev/thaiunion-shared-sandbox/dev-ocr-service"
+image = "asia-southeast1-docker.pkg.dev/thaiunion-shared-sandbox/dev-ocr-service/ocr-demo@sha256:2f4ad6a483098301c1ac6f1cf4477d699b723156d40184d9595a842b01aef8bc"
+digest = "sha256:2f4ad6a483098301c1ac6f1cf4477d699b723156d40184d9595a842b01aef8bc"
+dockerfile = "Dockerfile.demo"
+
+[service]
+client_url = "https://dev-ocr-demo-web-1022222817897.asia-southeast1.run.app"
+platform_url = "https://dev-ocr-demo-web-d7e7r5lv7a-as.a.run.app"
+ready_revision = "dev-ocr-demo-web-00001-8tm"
+public_transport = true
+application_key_required_for_processing = true
+runtime_identity = "tu-ddai-ocr-sa@thaiunion-shared-sandbox.iam.gserviceaccount.com"
+min_instances = 0
+max_instances = 1
+concurrency = 1
+cpu = "1"
+memory = "512Mi"
+timeout_seconds = 360
+startup_cpu_boost = false
+
+[backend]
+service = "dev-ocr-service-api"
+url = "https://dev-ocr-service-api-1022222817897.asia-southeast1.run.app"
+ready_revision = "dev-ocr-service-api-00004-hk5"
+caller_subject = "100484182732107656230"
+team = "team-demo"
+cloud_run_invoker_verified = true
+application_team_mapping_verified = true
+
+[security]
+shared_key_storage = "plaintext Cloud Run environment variable"
+shared_key_local_copy = "~/.config/ocr-demo/passcode (mode 0600)"
+secret_manager_used = false
+secret_manager_blocker = "deployer lacks secretmanager.secrets.create and secretmanager.secrets.setIamPolicy"
+public_endpoint_rate_limit = false
+per_user_identity = false
+no_document_persistence = true
+raw_ocr_logging = false
+
+[verification]
+full_tests_total = 484
+full_tests_passed = 476
+full_tests_skipped = 8
+demo_tests_passed = 56
+ruff_clean = true
+lock_clean = true
+local_container_health = 200
+local_container_uid = 10001
+local_container_clean_shutdown = true
+anonymous_home_status = 200
+anonymous_health_status = 200
+wrong_key_status = 401
+authorized_invalid_pdf_status = 400
+backend_invalid_pdf_status = 422
+paid_ocr_requests = 0
+real_pdf_extraction_verified = false
+browser_download_verified_manually = false
+
+[evidence]
+report = "verification/deployments/2026-11-10-thaiunion-shared-sandbox-ocr-demo.md"

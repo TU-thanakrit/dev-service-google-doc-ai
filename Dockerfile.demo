@@ -1,0 +1,20 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PORT=8080
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --requirement requirements.txt
+
+COPY app ./app
+
+# Run unprivileged: the demo proxy holds no persistent state and writes only to /tmp.
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin ocrworker
+USER 10001
+
+# Dedicated demo image (production_ready=false). PID 1 execs uvicorn so Cloud Run
+# receives signals correctly. Do not use this image for OCR API/worker roles.
+CMD ["sh", "-c", "exec uvicorn app.ocr_demo_entrypoint:app --host 0.0.0.0 --port ${PORT}"]
