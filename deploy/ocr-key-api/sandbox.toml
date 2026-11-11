@@ -1,0 +1,78 @@
+schema_version = 1
+status = "deployed"
+environment = "development"
+production_ready = false
+
+[scope]
+project = "thaiunion-shared-sandbox"
+region = "asia-southeast1"
+service = "dev-ocr-key-api"
+
+[access]
+public_transport_approved = true
+protected_routes = ["GET /health", "POST /v1/ocr/jobs", "GET /v1/ocr/jobs/{job_id}", "GET /v1/ocr/jobs/{job_id}/result"]
+header = "X-Demo-Key"
+key_storage = "Cloud Run environment variable; separate development-only key (plaintext approved for dev-only)"
+key_min_length = 32
+secret_manager_used = false
+shared_identity_note = "All facade callers use the same backend service identity and team; no per-user isolation, no key rotation, no brute-force edge rate limiting, no strong production control."
+
+[deployment]
+min_instances = 0
+max_instances = 1
+concurrency = 1
+memory = "512Mi"
+cpu = "1"
+request_timeout_seconds = 90
+url = "https://dev-ocr-key-api-1022222817897.asia-southeast1.run.app"
+platform_url = "https://dev-ocr-key-api-d7e7r5lv7a-as.a.run.app"
+ready_revision = "dev-ocr-key-api-00001-7fv"
+traffic_percent = 100
+local_key_path = "~/.config/ocr-key-api/passcode (mode 0600)"
+ingress_note = "Cloud Run outer HTTP request size limits apply; app does not claim ingress draining; key is not protection from bandwidth abuse."
+
+[source]
+branch = "feature/ocr-key-api"
+base_commit = "496e16d78a1c3cca891119965fe5e97e0e1f466c"
+working_tree_committed = false
+build_context_sha256 = "60d06464abce8888aa7cb8058a6e2b475544bb623bfd26f101759760f7cc017e"
+build_context_files = ["Dockerfile", "requirements.txt", "app/__init__.py", "app/ocr_key_proxy.py", "app/ocr_key_proxy_entrypoint.py"]
+dockerfile_source = "Dockerfile.key-proxy copied to Dockerfile in staged context"
+
+[build]
+cloud_build_id = "92d7ee98-335a-4718-97bf-dcacc8a007b0"
+status = "SUCCESS"
+image = "asia-southeast1-docker.pkg.dev/thaiunion-shared-sandbox/dev-ocr-service/ocr-key-api@sha256:8ca6ce49032dfb7d0a97b31520ce794281b853aa76bc4aaa03b7b9995e61cf8c"
+
+[backend]
+url = "https://dev-ocr-service-api-1022222817897.asia-southeast1.run.app"
+audience_must_equal_url = true
+runtime_identity = "tu-ddai-ocr-sa@thaiunion-shared-sandbox.iam.gserviceaccount.com"
+team = "team-demo"
+
+[acceptance]
+public_facade_approved = true
+plaintext_development_key_approved = true
+paid_ocr_requests_approved = 1
+malformed_test_document_submitted = true
+valid_document_submitted = true
+full_tests_total = 482
+full_tests_passed = 474
+full_tests_skipped = 8
+targeted_tests_passed = 54
+public_missing_and_wrong_key_status = 401
+public_keyed_health_status = 200
+public_keyed_unknown_job_status = 404
+public_keyed_invalid_pdf_status = 422
+live_valid_ocr_and_async_poll_verified = true
+live_fixture_pages = 1
+live_submit_http_status = 202
+live_result_http_status = 200
+live_result_state = "succeeded"
+live_result_schema_errors = 0
+live_known_reference_found = true
+automatic_paid_post_retries = 0
+
+[evidence]
+report = "verification/deployments/2026-11-10-ocr-key-api-sandbox.md"
+live_acceptance_report = "verification/deployments/2026-11-10-ocr-key-api-one-page-acceptance.json"

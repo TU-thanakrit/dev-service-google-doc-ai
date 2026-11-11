@@ -1,3 +1,5 @@
+"""Historical: the five Thai expense templates and their ordered field lists."""
+
 from dataclasses import dataclass
 
 

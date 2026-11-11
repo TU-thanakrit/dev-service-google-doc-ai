@@ -1,5 +1,7 @@
 # OCR service design interview
 
+Historical planning record: the decisions and deployment references below reflect the original interview, not the current implementation or deployment. For current requirements and deployment state, see `ocr-service-spec.md`, `ocr-v1-contracts.md`, and `../deploy/ocr-v1/sandbox.toml`.
+
 Status: v1 product scope and ticket breakdown confirmed by the user. Consolidated specification: `ocr-service-spec.md`. The approved tickets were published as issues #1–#12 in TU-thanakrit/dev-service-google-doc-ai by TU-thanakrit. Technical design/test proposals still require review; implementation, cloud changes, and paid tests are not authorized. Application code remains unchanged.
 
 ## Confirmed direction

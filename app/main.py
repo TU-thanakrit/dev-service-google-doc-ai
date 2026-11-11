@@ -1,3 +1,10 @@
+"""Historical: the synchronous five-template expense API (`POST /v1/documents:process`).
+
+Retained for its tests and provenance only. No container command and no documented
+procedure starts this module, and it is not reachable from the served OCR app
+(`app.ocr_api`); see `docs/ocr-v1-cutover.md`.
+"""
+
 import logging
 from typing import Annotated, Any, Protocol
 
@@ -63,12 +70,14 @@ def create_app(processor: Processor | None = None) -> FastAPI:
             )
         except HTTPException:
             raise
-        except Exception as exc:
-            logger.exception("Document processing failed")
+        except Exception:
+            # Fixed category only: an external exception's text can carry a path,
+            # a token, or document content, so nothing derived from it is logged.
+            logger.error("document processing failed error_code=internal_error")
             raise HTTPException(
                 status_code=500,
                 detail="Document processing failed",
-            ) from exc
+            ) from None
 
     return app
 

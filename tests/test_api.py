@@ -1,3 +1,5 @@
+import logging
+
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -42,6 +44,21 @@ def test_health_endpoint():
     assert response.json() == {"status": "ok"}
 
 
+def test_the_ocr_v1_api_stays_unmounted_until_its_own_cutover():
+    # The asynchronous OCR service is its own composition (`app.ocr_api`); this app
+    # keeps only the synchronous expense route until the documented cutover.
+    client = TestClient(create_app(processor=FakeProcessor()))
+
+    assert client.post("/v1/ocr/jobs").status_code == 404
+    assert client.get("/v1/ocr/jobs/some-job/result").status_code == 404
+
+    kept = client.post(
+        "/v1/documents:process",
+        files={"file": ("toll.pdf", b"pdf-bytes", "application/pdf")},
+    )
+    assert kept.status_code == 200
+
+
 def test_process_pdf_returns_service_output():
     client = TestClient(create_app(processor=FakeProcessor()))
 
@@ -78,14 +95,19 @@ def test_rejects_empty_upload():
     assert response.json()["detail"] == "Empty file"
 
 
-def test_internal_error_does_not_disclose_exception_text():
+def test_internal_error_does_not_disclose_exception_text(caplog):
     client = TestClient(create_app(processor=FailingProcessor()))
 
-    response = client.post(
-        "/v1/documents:process",
-        files={"file": ("bad.pdf", b"pdf-bytes", "application/pdf")},
-    )
+    with caplog.at_level(logging.ERROR, logger="app.main"):
+        response = client.post(
+            "/v1/documents:process",
+            files={"file": ("bad.pdf", b"pdf-bytes", "application/pdf")},
+        )
 
     assert response.status_code == 500
     assert response.json()["detail"] == "Document processing failed"
     assert "projects/123" not in response.text
+    # The log carries a fixed category only: the external exception's own text can
+    # carry a path, a token, or document content, so none of it is logged.
+    assert "error_code=internal_error" in caplog.text
+    assert "projects/123" not in caplog.text
