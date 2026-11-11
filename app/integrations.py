@@ -1,3 +1,5 @@
+"""Historical: Document AI OCR and Gemini structured-output adapters for the expense POC."""
+
 import json
 from typing import Any
 

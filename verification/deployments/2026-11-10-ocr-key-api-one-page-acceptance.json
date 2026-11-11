@@ -1,0 +1,32 @@
+{
+  "accuracy": "not_verified",
+  "approval": "one synthetic one-page PDF, one submission",
+  "automatic_post_retries": 0,
+  "idempotency_key_sha256": "8844b04ddd6f1edaa096d8bc677fd3f11687dbc3c7d6861f5e483cf90670a206",
+  "input_sha256": "812d52d8ae3ee0dba8e990ad942c03e5b3b76a58995e70da5b125206d24f77fb",
+  "job_id": "f46744a9-ccdb-431d-82d6-2b245bb88785",
+  "known_reference_found": true,
+  "page_count": 1,
+  "page_statuses": [
+    "succeeded"
+  ],
+  "paid_document_requests_attempted": 1,
+  "phase": "completed",
+  "poll_http_statuses": [
+    200,
+    200,
+    200
+  ],
+  "preflight_health_status": 200,
+  "result_http_status": 200,
+  "result_state": "succeeded",
+  "revision": "dev-ocr-key-api-00001-7fv",
+  "schema_error_count": 0,
+  "states": [
+    "accepted",
+    "accepted",
+    "succeeded"
+  ],
+  "submit_http_status": 202,
+  "terminal_state": "succeeded"
+}

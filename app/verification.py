@@ -1,3 +1,8 @@
+"""Historical: exact-key checks and redacted summaries for the expense API contract.
+
+OCR v1 result verification lives in `app/ocr_verification.py`.
+"""
+
 from typing import Any
 
 from app.templates import DOCUMENT_TYPES

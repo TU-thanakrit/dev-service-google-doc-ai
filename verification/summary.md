@@ -1,4 +1,6 @@
-# Verification summary
+# Verification summary — historical expense POC
+
+> This report predates OCR v1 and verifies the retired synchronous expense/Gemini path. It is retained as historical evidence only. Current OCR v1 deployment and acceptance facts are authoritative in `deploy/ocr-v1/sandbox.toml` and `verification/deployments/`.
 
 - Timestamp: `2026-10-25T20:11:19+07:00`
 - Workspace: `/home/danny/service_google_doc_ai`

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Run the API locally using the active gcloud CLI access token."""
+"""Historical: runs the retired expense API locally with the active gcloud token.
+
+This builds Document AI and Gemini clients, so it is not part of the OCR v1 service
+and no documented procedure uses it; see `docs/ocr-v1-cutover.md`.
+"""
 
 import uvicorn
 from google import genai

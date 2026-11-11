@@ -1,3 +1,8 @@
+"""Historical: `GOOGLE_CLOUD_PROJECT`/Document AI/Vertex settings for the expense POC.
+
+The OCR v1 roles read `OCR_*` through `app/ocr_config.py` instead.
+"""
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 

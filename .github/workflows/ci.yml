@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.7"
+          enable-cache: true
+
+      - name: Install Python and locked dependencies
+        run: |
+          uv python install 3.12
+          uv sync --frozen --python 3.12
+
+      - name: Lock, lint, and test
+        run: uv run python scripts/check.py --junitxml=/tmp/pytest.xml
+
+      - name: Build production container
+        run: docker build --tag dev-ocr-service:ci .
+
+      - name: Verify liveness and graceful shutdown
+        run: uv run python scripts/container_smoke.py --image dev-ocr-service:ci --runtime docker

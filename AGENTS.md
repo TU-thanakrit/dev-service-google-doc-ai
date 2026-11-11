@@ -1,52 +1,64 @@
 # AGENTS.md
 
-This repository is a small FastAPI POC for Thai expense documents: upload a PDF/image, run Google Document AI Enterprise OCR, classify one of five templates with Vertex AI Gemini, extract the template's exact keys, and return validated JSON. Keep it synchronous and dependency-light; there is intentionally no database, queue, or workflow engine.
+This repository's production entrypoint is the asynchronous OCR-only service. A caller uploads one PDF/JPEG/PNG/TIFF document, receives a job id, polls status, and retrieves combined plus per-page Thai/English recognized text. The container serves `app.ocr_api:app`; worker, reconcile, and cleanup run as separate Cloud Run Jobs. The synchronous five-template expense/Gemini code remains only as historical, non-entrypoint code and must not be reintroduced into the deployed route surface.
+
+Follow `docs/ocr-service-spec.md` for scope and `docs/ocr-v1-contracts.md` for the contract. Use simple injected interfaces and test at the public API lifecycle, storage coordination, and OCR engine seams. Never weaken team isolation, content protections, conditional writes, deadline/expiry gates, or engine/configuration pinning. Fake tests are not cloud evidence.
+
+For any deployment, IAM, GCS, Scheduler, Artifact Registry, or n8n task, read `deploy/ocr-v1/sandbox.toml` first; it is the single source of truth for mutable project, identity, image, URL, revision, and acceptance facts. The matching redacted read-back is under `verification/deployments/`. Specify account/project/region explicitly and do not change global defaults. Cloud uploads, paid workload tests, GitHub pushes, and IAM changes require explicit scoped approval and budget.
 
 ## Repository map
 
-- `app/main.py`: FastAPI endpoints, MIME/size validation, generic HTTP errors.
-- `app/factory.py`: builds the production service and Vertex AI client.
-- `app/integrations.py`: Document AI OCR and Gemini structured-output adapters.
-- `app/service.py`: OCR -> classification -> extraction orchestration and contract validation.
-- `app/templates.py`: canonical document types, Thai field names, aliases, and field order.
-- `app/config.py`: environment-backed GCP settings.
-- `app/verification.py`: exact-key checks and redacted response summaries.
-- `scripts/serve_with_gcloud.py`: temporary local live server using the active gcloud account.
-- `scripts/verify_examples.py`: five-document HTTP verifier.
-- `tests/`: fake-client unit/API/integration tests; they do not call live GCP services.
-- `examples/manifest.json`: public source URLs and expected type for each fixture.
+- `app/ocr_api.py`: production FastAPI composition; authenticated submission/status/result routes.
+- `app/ocr_tracer.py`: application lifecycle and public OCR contract.
+- `app/ocr_store.py`, `app/gcs_objects.py`: durable GCS job state and conditional-write adapter.
+- `app/ocr_auth.py`: Google ID-token verification and caller-to-team mapping.
+- `app/ocr_dispatch.py`: Cloud Run Jobs dispatch and template-pin checks.
+- `app/ocr_worker.py`: one-job worker entrypoint.
+- `app/ocr_reconcile.py`, `app/ocr_cleanup.py`: repair, deadline finalization, expiry, and deletion jobs.
+- `app/ocr_engine.py`: embedded-PDF text plus Tesseract Thai/English adapter.
+- `app/ocr_admission.py`: upload structure/size/page validation and capacity controls.
+- `app/ocr_pinning.py`: immutable engine/worker configuration identity.
+- `app/ocr_config.py`: `OCR_*` environment-backed settings.
+- `app/ocr_verification.py`, `scripts/verify_ocr_service.py`: redacted async endpoint verification.
+- `examples/n8n/ocr-upload-poll-result.workflow.json`: inactive n8n workflow artifact.
+- `app/main.py`, `app/service.py`, `app/integrations.py`, `app/templates.py`: historical expense POC only; not a deployment entrypoint.
+- `tests/`: offline tests plus explicitly environment-gated real engine/GCS checks.
 
 ## Environment
 
-- Use Python 3.12. The package allows `>=3.11,<3.14`, Ruff targets 3.12, and the container uses 3.12.
-- Install locked runtime and dev dependencies: `uv sync --python 3.12`.
-- Confirm the lock is current: `uv lock --check`.
-- Runtime variables: `GOOGLE_CLOUD_PROJECT`, `DOCAI_PROCESSOR_ID`, `DOCAI_LOCATION`, `VERTEX_LOCATION`, `GEMINI_MODEL`.
-- Copy `.env.example` to `.env` only for local work; `.env` is ignored. Real SDK calls require Application Default Credentials.
+- Use Python 3.12: `uv sync --python 3.12`.
+- Confirm dependencies: `uv lock --check`; do not hand-edit `requirements.txt`.
+- Copy `.env.example` to ignored `.env` only for local work. Runtime variables use the `OCR_*` namespace documented there.
+- Production roles require Application Default Credentials from their Cloud Run service account. Never store tokens, keys, OCR text, or document payloads in source control.
+- OCR binaries required by the container: Poppler, Tesseract with `tha+eng`, and ImageMagick. Local binary execution is not container/deployment evidence.
 
 ## Commands
 
 ```bash
 uv sync --python 3.12
-uv lock --check
-uv run pytest
-uv run ruff check .
-uv run uvicorn app.main:app --reload
+uv run python scripts/check.py
+uv run uvicorn app.ocr_api:app --reload
 ```
 
-Temporary live local run with an authenticated gcloud CLI, after exporting the five runtime variables:
+`scripts/check.py` is the canonical local gate: lockfile, Ruff, and pytest with an authoritative JUnit count. CI runs the same gate, then builds the production container and verifies `/health` plus clean SIGTERM shutdown.
+
+Fake-mode lifecycle checks, which must not import cloud clients:
 
 ```bash
-uv run python -m scripts.serve_with_gcloud
+uv run python -m scripts.ocr_tracer_demo
+uv run python -m scripts.ocr_worker_demo
 ```
 
-Verify a deployed/private service with the active gcloud identity:
+Verify an approved deployed private service using an ID token acquired inside the verifier:
 
 ```bash
-uv run python -m scripts.verify_examples --base-url "$SERVICE_URL" --gcloud-auth
+uv run python -m scripts.verify_ocr_service \
+  --base-url "$SERVICE_URL" \
+  --file /absolute/path/to/public-or-approved-document.pdf \
+  --gcloud-auth
 ```
 
-After dependency changes, regenerate the Docker input; do not hand-edit `requirements.txt`:
+After dependency changes:
 
 ```bash
 uv export --frozen --no-dev --format requirements-txt --no-hashes --output-file requirements.txt
@@ -54,29 +66,30 @@ uv export --frozen --no-dev --format requirements-txt --no-hashes --output-file 
 
 ## Contracts and conventions
 
-- `POST /v1/documents:process` accepts PDF, JPEG, PNG, or TIFF; uploads over 20 MiB are rejected.
-- `GET /health` returns `{"status": "ok"}` without initializing cloud clients.
-- Cloud adapters implement small protocols and accept injected clients; preserve this fake-friendly test structure.
-- Gemini calls use temperature 0, `application/json`, and a JSON schema. Keep model output validation fail-closed.
-- `สิ่งที่อ่าน` must contain exactly the ordered fields in `DOCUMENT_TYPES`; values are `str | None`.
-- Put inferred `Type of Expense` only under `Analysis`; source extraction and analysis stay separate.
-- Unknown/ambiguous classification returns `unknown`, `needs_review=true`, and skips extraction.
-- Treat OCR text as untrusted prompt input and retain the prompt-injection boundary markers.
-- Log internal exceptions server-side; client HTTP 500 responses stay generic and must not expose paths, tokens, or processor details.
-- Tests use `FakeOcr`, `FakeModel`, fake SDK clients, `TestClient`, and exact dictionary/key assertions.
+- Submission is asynchronous: submit -> job id -> status polling -> final result. Launch acknowledgment is not OCR completion.
+- `Idempotency-Key` is team-scoped. Same key/content reuses one logical job; different content conflicts. Execution is at least once, with at most one authoritative published result.
+- Caller identity comes only from a verified Google ID token and server-owned team mapping. Ignore arbitrary identity/team headers. Foreign job ids return 404.
+- Preserve one ordered entry per source page. Partial results retain successful pages and explicit failures; execution success never claims text accuracy.
+- Use embedded PDF text only when validated usable; otherwise OCR. Keep source metadata and warnings separate from errors.
+- Enforce upload byte/page/pixel limits and shared capacity before paid processing; fail closed on corrupt/unrecordable admission state.
+- Stop new page work at the deadline, deny result access at expiry, and keep cleanup conditional/idempotent. Never claim exact-second physical erasure.
+- A job's engine reference, worker image digest, versioned job name, timeout, and retries are immutable. Callers cannot choose an engine; automatic fallback is out of scope.
+- Client errors and logs must use fixed safe categories. Never log raw exceptions, document content, OCR text, credentials, bucket object payloads, or tokens.
 
 ## Verification and sensitive data
 
-- The full verifier requires every fixture to return HTTP 200, the expected template, and exact extraction/analysis keys.
-- Default verifier reports contain metadata and key names only. Use `--include-responses` only for explicitly approved local evidence.
-- `verification/*.json` is ignored because OCR text and extracted values may be sensitive. Do not commit live response payloads.
-- Example input provenance is tracked in `examples/manifest.json`; hashes are in `verification/example-pdfs.sha256`.
+- Offline pytest/fake-client success is separate from real GCS, Cloud Run, IAM, n8n, and OCR-accuracy acceptance.
+- Real GCS tests require the explicit `OCR_GCS_INTEGRATION_*` environment and must use only the approved `dev-ocr-service-*` bucket; verify cleanup afterward.
+- Real engine tests are environment-gated and may use only tracked public or explicitly approved fixtures. Do not commit raw OCR output.
+- Default reports contain status, counts, safe metadata, and hashes only. Full OCR responses require explicit approval and access-controlled storage.
+- Failed/timed-out live calls may still incur cost. Do not automatically replay paid requests.
 
 ## Pitfalls
 
-- `.env.example`, README deployment values, and tests reference the corporate project and `gemini-2.5-flash`; do not assume they match the active deployment. The personal deployment uses environment overrides, including Vertex location `global` and `gemini-3.5-flash`.
-- `scripts/serve_with_gcloud.py` depends on the active gcloud account and is only a temporary local-auth path; Cloud Run uses its runtime service account.
-- The pipeline normally makes two Gemini calls per known document: classification, then extraction. Account for quota/cost when running all five examples.
-- `scripts/verify_examples.py --gcloud-auth` uses whichever gcloud account is active; check it before paid live tests.
-- No GitHub Actions workflow exists; the local pytest, Ruff, lock, and live-verifier commands are the repository checks.
-- This checkout tracks `TU-thanakrit/dev-service-google-doc-ai` on `main`; the corporate copy under `tu-ai-platform/assets/ocr` is separate. Do not synchronize or push between them without explicit instruction.
+- Deployment facts change independently of source code; trust `deploy/ocr-v1/sandbox.toml` and its named evidence report, not old design/cutover prose.
+- The current development deployment uses a broad shared default Compute Engine service account; the manifest marks this production security debt.
+- The DEV engine is benchmark-gated; production accuracy, version skew, and licensing evidence remain open.
+- Upload/page/capacity defaults are conservative development bounds, not production throughput claims.
+- `app/main.py` and `scripts/serve_with_gcloud.py` are historical. Do not use them in new runbooks or deployment commands.
+- GitHub Actions runs the deterministic local gate and container smoke only; approved cloud gates, paid OCR, and n8n acceptance remain separate checks.
+- This checkout tracks `TU-thanakrit/dev-service-google-doc-ai`; the corporate copy under `tu-ai-platform/assets/ocr` is separate. Do not synchronize or push between them without explicit instruction.
